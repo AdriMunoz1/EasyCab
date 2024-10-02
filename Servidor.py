@@ -1,16 +1,10 @@
-# This is a sample Python script.
+import socket
 
-# Press Mayús+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+ServerSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+ServerSocket.bind(('localhost', 9999))
+ServerSocket.listen(5)
 
-
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press Ctrl+F8 to toggle the breakpoint.
-
-
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print_hi('PyCharm')
-
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+while True:
+    conexion, addr = ServerSocket.accept()
+    conexion.send("Hola, desde el Servidor")
+    conexion.close()
