@@ -2,9 +2,6 @@ import socket
 import threading
 import sys
 
-from pyasn1_modules.rfc5934 import TAMPMsgRef
-
-
 def get_parameters():
     if len(sys.argv) <= 5:
         print("Usage: python EC_DE  <EC_Central_IP> <EC_Central_Port> <EC_S_IP> <EC_S_Port> <Taxi_ID>")
@@ -76,7 +73,7 @@ def main():
     if validate_taxi(ip_central, port_central, ip_taxi):
         run_server()
     else:
-        msg = input("Do yoy want register a new taxi? (s/n)")
+        msg = input("Do yoy want to register a new taxi? (s/n)")
         if msg.lower() == "s":
             print("Soy gay")
 
