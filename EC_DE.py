@@ -49,7 +49,7 @@ def handle_client(client_socket, addr):
 
 
 def run_server():
-    server_ip = "127.0.0.1"
+    server_ip = "localhost"
     port = 8000
 
     try:
