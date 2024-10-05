@@ -1,5 +1,36 @@
 import socket
+import sqlite3
 import threading
+
+
+def authenticate_taxi(id_taxi):
+    connection = sqlite3.connect('taxis.db')
+    cursor = connection.cursor()
+    cursor.execute('''
+                SELECT * FROM taxis WHERE id=?
+        ''', (id_taxi,))
+
+    taxi = cursor.fetchone() # Obtener la primera fila del resultado
+
+    connection.close()
+
+    if taxi:
+        print(f"Taxi {id_taxi} authenticated successfully!")
+        return True
+    else:
+        print(f"Taxi {id_taxi} failed authentication or is not available.")
+        return False
+
+def update_taxi_status(id_taxi, status):
+    connection = sqlite3.connect('taxis.db')
+    cursor = connection.cursor()
+
+    cursor.execute('''
+        UPDATE taxis SET status=? WHERE id=?
+    ''', (status, id_taxi))
+    connection.commit()
+    connection.close()
+
 
 def handle_client(client_socket, addr):
     try:
@@ -11,10 +42,11 @@ def handle_client(client_socket, addr):
                 taxi_id = request.split("#")[1] #coge lo que está despues del AUTH#
                 print(f"Authenticating taxi {taxi_id}")
                 #validar si el taxi está en la base de datos
-                # si encuentra al taxi en la BD
-                response = "OK" # Si es exitosa
-                # si no
-                response = "NOT FOUND"
+                if authenticate_taxi(taxi_id):
+                    #update_taxi_status(int(taxi_id), "OK")
+                    response = "OK"
+                else:
+                    response = "KO"
                 client_socket.send(response.encode("utf-8"))
             else:
                 print(f"Recieved: {request}")
@@ -31,7 +63,7 @@ def run_server():
     port = 8000
     try:
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.blind((server_ip, port))
+        server_socket.bind((server_ip, port))
         server_socket.listen()
         print(f"EC_Central listening on {server_ip}:{port}")
         while True:

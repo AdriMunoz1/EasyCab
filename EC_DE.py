@@ -50,7 +50,7 @@ def handle_client(client_socket, addr):
 
 def run_server():
     server_ip = "localhost"
-    port = 8000
+    port = 8001
 
     try:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -71,6 +71,7 @@ def main():
     ip_central, port_central, broker_ip, broker_port, ip_taxi = get_parameters()
 
     if validate_taxi(ip_central, port_central, ip_taxi):
+
         run_server()
     else:
         msg = input("Do yoy want to register a new taxi? (s/n)")
