@@ -1,62 +1,39 @@
-from confluent_kafka import Producer, Consumer, KafkaError
-import time
+import socket
+import sys
+from kafka import KafkaProducer
 
-class ECCustomer:
-    def __init__(self, broker, topic, customer_id, destinations_file):
-        self.broker = broker
-        self.topic = topic
-        self.customer_id = customer_id
-        self.destinations_file = destinations_file
-        self.producer = Producer({'bootstrap.servers': broker})
-        self.consumer = Consumer({
-            'bootstrap.servers': broker,
-            'group.id': f'customer_{customer_id}',
-            'auto.offset.reset': 'earliest'
-        })
-        self.consumer.subscribe([f'response_{customer_id}'])
+def get_parameters():
+    if len(sys.argv) <= 3:
+        print(f"Error: <IP Broker> <Port Broker>  <ID Cliente>")
+        sys.exit(1)
+    ip_broker = sys.argv[1]
+    port_broker = int(sys.argv[2])
+    id_cliente = sys.argv[3]
 
-    def delivery_report(self, err, msg):
-        """ Called once for each message produced to indicate delivery result. """
-        if err is not None:
-            print(f'Message delivery failed: {err}')
+    return ip_broker, port_broker, id_cliente
+
+def request_taxi(central_socket, id_cliente):
+    ubicacion_recogida = input("Introduce la ubicación de recogida:")
+    destino = input("Introduce el destino:")
+    mensaje = f"REQUEST#{id_cliente}#{ubicacion_recogida}#{destino}"
+    central_socket.send(mensaje.encode('utf-8'))
+    respuesta = central_socket.recv(1024).decode('utf-8')
+    print(f"Respuesta de EC_Central: {respuesta}")
+def main():
+
+    ip_broker, port_broker, id_cliente = get_parameters()
+
+    producer = KafkaProducer(bootstrap_servers=f'{ip_broker}:{port_broker}')
+    print(f"Cliente {id_cliente} conecatado a Kafka en {ip_broker}:{port_broker}")
+
+    while True:
+        solicitud = input("¿Quiere pedir un taxi? (s/n):").lower()
+        if solicitud == 's':
+            request_taxi(producer, id_cliente)
         else:
-            print(f'Message delivered to {msg.topic()} [{msg.partition()}]')
+            print("Adios")
+            break
 
-    def send_request(self, destination):
-        """ Send a taxi service request to the central system """
-        message = f'{self.customer_id}#{destination}'
-        self.producer.produce(self.topic, message, callback=self.delivery_report)
-        self.producer.flush()
-
-    def await_response(self):
-        """ Wait for a response from the central system """
-        msg = self.consumer.poll(timeout=10.0)
-        if msg is None:
-            print("No response received within the timeout.")
-        elif msg.error():
-            print(f'Error: {msg.error()}')
-        else:
-            print(f"Received response: {msg.value().decode('utf-8')}")
-
-    def process_requests(self):
-        """ Process requests from the destinations file """
-        with open(self.destinations_file, 'r') as file:
-            destinations = file.readlines()
-
-        for destination in destinations:
-            destination = destination.strip()
-            print(f"Requesting taxi to {destination}")
-            self.send_request(destination)
-            time.sleep(1)  # Simulate delay
-            self.await_response()
-            time.sleep(4)  # Wait before the next request
-
-
+######################### MAIN #########################
 if __name__ == "__main__":
-    broker = 'localhost:9092'  # Kafka broker
-    topic = 'taxi_requests'
-    customer_id = 'customer_1'
-    destinations_file = 'destinations.txt'
-
-    customer = ECCustomer(broker, topic, customer_id, destinations_file)
-    customer.process_requests()
+    main()
