@@ -1,10 +1,8 @@
 import socket
 import sqlite3
 import threading
-from kafka import KafkaProducer, KafkaConsumer
 
 
-# Función para cargar el mapa de la ciudad
 def load_city_map(filename):
     city_map = [['' for _ in range(20)] for _ in range(20)]
     try:
@@ -22,61 +20,44 @@ def load_city_map(filename):
     return city_map
 
 
-# Función para enviar un comando al taxi vía Kafka
-def send_command_kafka(producer, command, taxi_id, topic="taxi_responses", extra_param=None):
+# Función para enviar un comando al taxi (STOP, RESUME, DESTINATION, RETURN)
+def send_command(client_sockets, command, taxi_id, extra_param=None):
     try:
-        if command == "DESTINATION":
-            msg = f"{command}#{taxi_id}#{extra_param}"  # extra_param es el nuevo destino
-        else:
-            msg = f"{command}#{taxi_id}"
+        for client_socket in client_sockets:
+            if client_socket["taxi_id"] == taxi_id:
+                if command == "DESTINATION":
+                    msg = f"{command}#{taxi_id}#{extra_param}"  # extra_param es el nuevo destino
+                else:
+                    msg = f"{command}#{taxi_id}"
 
-        producer.send(topic, msg.encode('utf-8'))
-        print(f"Comando {command} enviado al taxi {taxi_id}")
+                client_socket["socket"].send(msg.encode('utf-8'))
+                print(f"Comando {command} enviado al taxi {taxi_id}")
+
+                # Recibir respuesta del taxi
+                mensaje = client_socket["socket"].recv(1024).decode('utf-8')
+                if mensaje == 'OK' and command == 'STOP':
+                    update_taxi_status("KO", taxi_id)
+                elif mensaje == 'OK' and command == 'RESUME':
+                    update_taxi_status("OK", taxi_id)
+                return
+        print(f"Taxi {taxi_id} no encontrado.")
     except Exception as e:
         print(f"Error al enviar el comando {command} al taxi {taxi_id}: {e}")
 
 
-# Hilo para manejar las solicitudes de Kafka
-def kafka_request_handler(consumer, producer, city_map):
-    try:
-        for message in consumer:
-            request = message.value.decode('utf-8')
-            print(f"Solicitud recibida: {request}")
-            process_request(request, producer, city_map)
-    except Exception as e:
-        print(f"Error procesando la solicitud de Kafka: {e}")
-
-
-# Procesa la solicitud de comandos y los envía al taxi
-def process_request(request, producer, city_map):
-    parts = request.split("#")
-    command = parts[0]
-    taxi_id = parts[1]
-
-    if command == "STOP":
-        send_command_kafka(producer, "STOP", taxi_id)
-    elif command == "RESUME":
-        send_command_kafka(producer, "RESUME", taxi_id)
-    elif command == "DESTINATION":
-        new_destination = parts[2]
-        send_command_kafka(producer, "DESTINATION", taxi_id, extra_param=new_destination)
-    elif command == "RETURN":
-        send_command_kafka(producer, "RETURN", taxi_id)
-
-
-# Función para manejar los comandos del usuario desde la terminal
-def command_input_handler(client_sockets, producer):
+# Hilo para manejar los comandos del usuario
+def command_input_handler(client_sockets):
     while True:
         command = input("Introduce un comando (STOP/RESUME/DESTINATION/RETURN) para el taxi: ")
         taxi_id = input("Introduce el ID del taxi: ")
 
         if command in ["STOP", "RESUME"]:
-            send_command_kafka(producer, command, taxi_id)
+            send_command(client_sockets, command, taxi_id)
         elif command == "DESTINATION":
             new_destination = input("Introduce la nueva localización (ID_LOCALIZACION): ")
-            send_command_kafka(producer, "DESTINATION", taxi_id, extra_param=new_destination)
+            send_command(client_sockets, "DESTINATION", taxi_id, new_destination)
         elif command == "RETURN":
-            send_command_kafka(producer, "RETURN", taxi_id)
+            send_command(client_sockets, "RETURN", taxi_id)
         else:
             print("Comando no válido. Usa STOP, RESUME, DESTINATION o RETURN.")
 
@@ -168,6 +149,7 @@ def handle_client(client_socket, addr, city_map, client_sockets):
             elif request.startswith("DESTINATION#"):
                 if taxi_id:
                     id_localizacion = request.split("#")[2]
+                    # Buscar las coordenadas de la localización en el mapa
                     for x in range(20):
                         for y in range(20):
                             if city_map[x][y] == id_localizacion:
@@ -211,24 +193,17 @@ def handle_client(client_socket, addr, city_map, client_sockets):
 
 # Función para ejecutar el servidor EC_Central
 def run_server(city_map):
-    client_sockets = []
     server_ip = "localhost"
     port = 8000
-
-    producer = KafkaProducer(bootstrap_servers='localhost:9092')
-    consumer = KafkaConsumer('taxi_requests', bootstrap_servers='localhost:9092', auto_offset_reset='earliest')
-
+    client_sockets = []
     try:
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.bind((server_ip, port))
         server_socket.listen()
         print(f"EC_Central escuchando en {server_ip}:{port}")
 
-        # Hilo para manejar las solicitudes desde Kafka
-        threading.Thread(target=kafka_request_handler, args=(consumer, producer, city_map)).start()
-
         # Crear un hilo para manejar los comandos del usuario
-        threading.Thread(target=command_input_handler, args=(client_sockets, producer)).start()
+        threading.Thread(target=command_input_handler, args=(client_sockets,)).start()
 
         while True:
             client_socket, addr = server_socket.accept()

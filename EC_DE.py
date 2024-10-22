@@ -2,7 +2,6 @@ import socket
 import threading
 import sys
 import time
-from kafka import KafkaConsumer
 
 # Variable global para manejar el estado del taxi
 taxi_status_lock = threading.Lock()  # Lock para controlar el acceso a taxi_status
@@ -11,7 +10,6 @@ taxi_position = (1, 1)  # Posición inicial del taxi
 destination_position = None  # Posición de destino
 taxi_thread = None  # Hilo para el movimiento del taxi
 
-
 def send_taxi_position_to_central(position, central_socket, taxi_id):
     try:
         # Enviar la posición actual del taxi a EC_Central
@@ -19,7 +17,6 @@ def send_taxi_position_to_central(position, central_socket, taxi_id):
         central_socket.send(message.encode('utf-8'))
     except Exception as e:
         print(f"Error al enviar la posición del taxi {taxi_id}: {e}")
-
 
 # Función para mover el taxi hacia el destino
 def move_taxi_to_destination(destination_position, central_socket, taxi_id):
@@ -59,12 +56,10 @@ def move_taxi_to_destination(destination_position, central_socket, taxi_id):
     if taxi_position == destination_position:
         print(f"Taxi {taxi_id} ha llegado a su destino: {destination_position}")
 
-
 # Hilo para manejar el movimiento del taxi
 def taxi_movement_thread(central_socket, taxi_id):
     global destination_position
     move_taxi_to_destination(destination_position, central_socket, taxi_id)
-
 
 # Obtener los parámetros pasados por línea de comandos
 def get_parameters():
@@ -78,7 +73,6 @@ def get_parameters():
     taxi_id = sys.argv[5]
 
     return ip_central, port_central, broker_ip, broker_port, taxi_id
-
 
 # Validar el taxi con EC_Central
 def validate_taxi(ip_central, port_central, taxi_id, client_socket):
@@ -99,59 +93,44 @@ def validate_taxi(ip_central, port_central, taxi_id, client_socket):
         print(f"Error al autenticar el taxi: {e}")
         return False
 
-
-# Manejo de comandos desde Kafka
-def handle_kafka_commands(taxi_id):
+# Manejo de comandos desde EC_Central
+def handle_central_commands(central_socket, taxi_id):
     global taxi_status, taxi_position, destination_position, taxi_thread  # Para actualizar el estado del taxi
-
-    # Crear un KafkaConsumer para escuchar comandos de EC_Central
-    consumer = KafkaConsumer(
-        f'taxi_{taxi_id}_commands',
-        bootstrap_servers='localhost:9092',
-        auto_offset_reset='earliest',
-        group_id=f'taxi_{taxi_id}_group'
-    )
-
     try:
-        for message in consumer:
-            command_message = message.value.decode('utf-8')
-            print(f"Mensaje recibido desde Kafka: {command_message}")
-
-            if command_message.startswith("STOP#"):
+        while True:
+            message = central_socket.recv(1024).decode("utf-8")
+            if message.startswith("STOP#"):
                 with taxi_status_lock:
                     print("Recibido comando para detener el taxi")
                     taxi_status = "detenido"  # Actualizar el estado a "detenido"
-
-            elif command_message.startswith("RESUME#"):
+                central_socket.send("OK".encode('UTF-8'))
+            elif message.startswith("RESUME#"):
                 with taxi_status_lock:
                     print("Recibido comando para reanudar el taxi")
                     taxi_status = "en movimiento"  # Reanudar el movimiento
+                central_socket.send("OK".encode('UTF-8'))
                 # Volver a lanzar el hilo de movimiento si está detenido
                 if taxi_thread and not taxi_thread.is_alive():
-                    taxi_thread = threading.Thread(target=taxi_movement_thread, args=(None, taxi_id))
+                    taxi_thread = threading.Thread(target=taxi_movement_thread, args=(central_socket, taxi_id))
                     taxi_thread.start()
-
-            elif command_message.startswith("DESTINATION#"):
-                parts = command_message.split("#")
+            elif message.startswith("DESTINATION#"):
+                parts = message.split("#")
                 destination_position = eval(parts[2])  # Convertir la posición del destino en tupla
                 print(f"Recibido nuevo destino: {destination_position}")
                 taxi_status = "en movimiento"
                 if taxi_thread and taxi_thread.is_alive():
                     print("Taxi ya está en movimiento, esperando a que termine o se detenga.")
                 else:
-                    taxi_thread = threading.Thread(target=taxi_movement_thread, args=(None, taxi_id))
+                    taxi_thread = threading.Thread(target=taxi_movement_thread, args=(central_socket, taxi_id))
                     taxi_thread.start()
-
-            elif command_message.startswith("RETURN#"):
+            elif message.startswith("RETURN#"):
                 print("Recibido comando para volver a la base [1,1]")
                 destination_position = (1, 1)
                 taxi_status = "en movimiento"
-                taxi_thread = threading.Thread(target=taxi_movement_thread, args=(None, taxi_id))
+                taxi_thread = threading.Thread(target=taxi_movement_thread, args=(central_socket, taxi_id))
                 taxi_thread.start()
-
     except Exception as e:
-        print(f"Error al recibir comandos desde Kafka: {e}")
-
+        print(f"Error al recibir comandos: {e}")
 
 # Escuchar señales de EC_S
 def run_sensor_server(taxi_id):
@@ -173,12 +152,11 @@ def run_sensor_server(taxi_id):
     finally:
         server.close()
 
-
 # Función principal del taxi
 def main():
     ip_central, port_central, broker_ip, broker_port, taxi_id = get_parameters()
 
-    # Establecer la conexión inicial con EC_Central (para autenticación)
+    # Establecer la conexión inicial con EC_Central
     central_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     central_socket.connect((ip_central, port_central))
 
@@ -188,14 +166,13 @@ def main():
         server_thread = threading.Thread(target=run_sensor_server, args=(taxi_id,))
         server_thread.start()
 
-        # Iniciar un hilo para manejar comandos de Kafka desde EC_Central
-        kafka_command_thread = threading.Thread(target=handle_kafka_commands, args=(taxi_id,))
-        kafka_command_thread.start()
+        # Iniciar un hilo para manejar comandos de EC_Central
+        central_command_thread = threading.Thread(target=handle_central_commands, args=(central_socket, taxi_id))
+        central_command_thread.start()
 
     else:
         print("Autenticación fallida. Por favor, intenta nuevamente.")
         central_socket.close()
-
 
 ########################## MAIN ##########################
 if __name__ == "__main__":
