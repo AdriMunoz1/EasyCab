@@ -1,6 +1,31 @@
 import socket
 import sqlite3
 import threading
+from kafka import KafkaConsumer
+
+# Función para consumir mensajes de Kafka y gestionar las solicitudes de clientes
+def kafka_consumer_handler(city_map, client_sockets):
+    consumer = KafkaConsumer(
+        'central_topic',
+        bootstrap_servers=['127.0.0.1:9092'],  # Cambia por la IP y puerto de tu Broker Kafka
+        auto_offset_reset='earliest',
+        enable_auto_commit=True,
+        group_id='central-group'
+    )
+
+    print("Esperando solicitudes de taxi desde Kafka...")
+
+    for mensaje in consumer:
+        solicitud = mensaje.value.decode('utf-8')
+        print(f"Recibido: {solicitud}")
+        # Aquí agregarías la lógica para asignar un taxi en función de la solicitud recibida
+        # Ejemplo de procesamiento del mensaje (esto depende de la estructura de solicitud que envíes desde EC_Customer):
+        if solicitud.startswith("Cliente"):
+            parts = solicitud.split(" ")
+            cliente_id = parts[1]
+            destino = parts[-1]
+            print(f"Procesando solicitud del cliente {cliente_id} hacia {destino}")
+            # Lógica para asignar un taxi basado en los taxis disponibles en `client_sockets`
 
 
 def load_city_map(filename):
@@ -204,6 +229,9 @@ def run_server(city_map):
 
         # Crear un hilo para manejar los comandos del usuario
         threading.Thread(target=command_input_handler, args=(client_sockets,)).start()
+
+        # Crear un hilo para consumir mensajes desde Kafka
+        threading.Thread(target=kafka_consumer_handler, args=(city_map, client_sockets)).start()
 
         while True:
             client_socket, addr = server_socket.accept()
