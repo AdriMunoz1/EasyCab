@@ -31,12 +31,13 @@ def send_command(client_sockets, command, taxi_id, extra_param=None):
                 client_socket["socket"].send(msg.encode('utf-8'))
                 print(f"Comando {command} enviado al taxi {taxi_id}")
 
-                # Recibir respuesta del taxi
-                mensaje = client_socket["socket"].recv(1024).decode('utf-8')
-                if mensaje == 'OK' and command == 'STOP':
-                    update_taxi_status("KO", taxi_id)
-                elif mensaje == 'OK' and command == 'RESUME':
-                    update_taxi_status("OK", taxi_id)
+                # Recibir respuesta del taxi solo para los comandos RESUME y DESTINATION
+                if command in ["RESUME", "DESTINATION"]:
+                    mensaje = client_socket["socket"].recv(1024).decode('utf-8')
+                    if mensaje == 'OK' and command == 'STOP':
+                        update_taxi_status("KO", taxi_id)
+                    elif mensaje == 'OK' and command == 'RESUME':
+                        update_taxi_status("OK", taxi_id)
                 return
         print(f"Taxi {taxi_id} no encontrado.")
     except Exception as e:
@@ -116,7 +117,6 @@ def handle_client(client_socket, addr, city_map, client_sockets):
             elif request.startswith("STOP#"):
                 if taxi_id:
                     city_map[taxi_position[0]][taxi_position[1]] = f'T{taxi_id} rojo'
-                    client_socket.send(f"STOP#{taxi_id}".encode("utf-8"))
                     update_taxi_status("KO", taxi_id)
                     print(f"Taxi {taxi_id} detenido y marcado como KO")
                 else:
@@ -126,7 +126,6 @@ def handle_client(client_socket, addr, city_map, client_sockets):
             elif request.startswith("RESUME#"):
                 if taxi_id:
                     city_map[taxi_position[0]][taxi_position[1]] = f'T{taxi_id} verde'
-                    client_socket.send(f"RESUME#{taxi_id}".encode("utf-8"))
                     update_taxi_status("OK", taxi_id)
                     print(f"Taxi {taxi_id} reanudado y marcado como OK")
                 else:
