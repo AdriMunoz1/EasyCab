@@ -4,6 +4,8 @@ import threading
 import time
 from kafka import KafkaProducer, KafkaConsumer
 
+available_taxis = []    # Lista para almacenar los taxis disponibles
+
 def load_city_map(filename):
     city_map = [['' for _ in range(20)] for _ in range(20)]
     try:
@@ -115,6 +117,9 @@ def handle_client(client_socket, addr, city_map, client_sockets):
                 if authenticate_taxi(taxi_id):
                     response = "OK"
                     client_sockets.append({"socket": client_socket, "taxi_id": taxi_id})
+
+                    available_taxis.append(taxi_id)  # Agregar taxi a la lista de disponibles
+
                     taxi_position = (1, 1)
                     city_map[taxi_position[0]][taxi_position[1]] = f'T{taxi_id} verde'
                 else:
@@ -125,6 +130,9 @@ def handle_client(client_socket, addr, city_map, client_sockets):
                 if taxi_id:
                     city_map[taxi_position[0]][taxi_position[1]] = f'T{taxi_id} rojo'
                     update_taxi_status("KO", taxi_id)
+
+                    available_taxis.remove(taxi_id)  # Remover taxi de la lista de disponibles
+
                     print(f"Taxi {taxi_id} detenido y marcado como KO")
                 else:
                     response = "Taxi no autenticado"
@@ -134,6 +142,9 @@ def handle_client(client_socket, addr, city_map, client_sockets):
                 if taxi_id:
                     city_map[taxi_position[0]][taxi_position[1]] = f'T{taxi_id} verde'
                     update_taxi_status("OK", taxi_id)
+
+                    available_taxis.append(taxi_id)  # Agregar taxi a la lista de disponibles
+
                     print(f"Taxi {taxi_id} reanudado y marcado como OK")
                 else:
                     response = "Taxi no autenticado"
@@ -176,6 +187,9 @@ def handle_client(client_socket, addr, city_map, client_sockets):
         if taxi_id:
             update_taxi_status("KO", taxi_id)
             client_sockets[:] = [cs for cs in client_sockets if cs["taxi_id"] != taxi_id]
+
+            available_taxis.remove(taxi_id)  # Remover taxi de la lista de disponibles
+
             if taxi_position:
                 city_map[taxi_position[0]][taxi_position[1]] = ''
             print(f"Taxi {taxi_id} desconectado y marcado como KO.")
@@ -189,11 +203,18 @@ def handle_request(consumer, producer, topic_response):
         request = message.value.decode('utf-8')
         id_client, destiny = request.split('#')
         print(f"Solicitud recibida de {id_client} para destino {destiny}")
+
         time.sleep(2)  # Simular tiempo de procesamiento
-        if destiny:  # Aquí puedes agregar lógica para aceptar/rechazar solicitudes
-            response = "OK"
+
+        # Aquí se decide si se acepta o se rechaza la solicitud
+        if available_taxis:
+            # Si hay taxis disponibles, aceptar la solicitud
+            taxi_id = available_taxis.pop(0)  # Asigna el primer taxi disponible
+            response = f"OK#{taxi_id}"  # Respuesta con el ID del taxi
         else:
+            # Si no hay taxis disponibles, denegar la solicitud
             response = "DENEGADO"
+
         producer.send(topic_response, response.encode('utf-8'))
         print(f"Respuesta enviada a {id_client}: {response}")
 
