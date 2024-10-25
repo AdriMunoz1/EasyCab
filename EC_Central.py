@@ -1,6 +1,8 @@
 import socket
 import sqlite3
 import threading
+import time
+from kafka import KafkaProducer, KafkaConsumer
 
 def load_city_map(filename):
     city_map = [['' for _ in range(20)] for _ in range(20)]
@@ -17,6 +19,7 @@ def load_city_map(filename):
     except Exception as e:
         print(f"Error al cargar el mapa de la ciudad: {e}")
     return city_map
+
 
 # Función para enviar un comando al taxi (STOP, RESUME, DESTINATION, RETURN)
 def send_command(client_sockets, command, taxi_id, extra_param=None):
@@ -43,6 +46,7 @@ def send_command(client_sockets, command, taxi_id, extra_param=None):
     except Exception as e:
         print(f"Error al enviar el comando {command} al taxi {taxi_id}: {e}")
 
+
 # Hilo para manejar los comandos del usuario
 def command_input_handler(client_sockets):
     while True:
@@ -59,6 +63,7 @@ def command_input_handler(client_sockets):
         else:
             print("Comando no válido. Usa STOP, RESUME, DESTINATION o RETURN.")
 
+
 # Función para actualizar el estado de un taxi en la base de datos
 def update_taxi_status(status, id_taxi):
     try:
@@ -70,6 +75,7 @@ def update_taxi_status(status, id_taxi):
         print(f"Taxi {id_taxi} actualizado a {status}.")
     except sqlite3.Error as e:
         print(f"Error al actualizar el estado del taxi {id_taxi}: {e}")
+
 
 # Función para autenticar el taxi
 def authenticate_taxi(id_taxi):
@@ -90,6 +96,7 @@ def authenticate_taxi(id_taxi):
     except sqlite3.Error as e:
         print(f"Error al autenticar el taxi: {e}")
         return False
+
 
 # Función para manejar las conexiones con los taxis
 def handle_client(client_socket, addr, city_map, client_sockets):
@@ -175,11 +182,31 @@ def handle_client(client_socket, addr, city_map, client_sockets):
             client_socket.close()
             print(f"Conexión con {addr[0]}:{addr[1]} cerrada.")
 
+
+# Función para manejar solicitudes de taxis con Kafka
+def handle_request(consumer, producer, topic_response):
+    for message in consumer:
+        request = message.value.decode('utf-8')
+        id_client, destiny = request.split('#')
+        print(f"Solicitud recibida de {id_client} para destino {destiny}")
+        time.sleep(2)  # Simular tiempo de procesamiento
+        if destiny:  # Aquí puedes agregar lógica para aceptar/rechazar solicitudes
+            response = "OK"
+        else:
+            response = "DENEGADO"
+        producer.send(topic_response, response.encode('utf-8'))
+        print(f"Respuesta enviada a {id_client}: {response}")
+
+
 # Función para ejecutar el servidor EC_Central
 def run_server(city_map):
     server_ip = "localhost"
     port = 8000
     client_sockets = []
+
+    ip_broker = 'localhost'     # Dirección IP del broker de Kafka
+    port_broker = 9092          # Puerto del broker de Kafka
+
     try:
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.bind((server_ip, port))
@@ -187,6 +214,22 @@ def run_server(city_map):
         print(f"EC_Central escuchando en {server_ip}:{port}")
 
         threading.Thread(target=command_input_handler, args=(client_sockets,)).start()
+
+        # Configurar consumidor de Kafka para recibir solicitudes
+        consumer = KafkaConsumer(
+            'central_topic',
+            bootstrap_servers=f'{ip_broker}:{port_broker}',
+            group_id='grupo_central',
+            auto_offset_reset='earliest'
+        )
+
+        # Configurar productor de Kafka para enviar respuestas
+        producer = KafkaProducer(bootstrap_servers=f'{ip_broker}:{port_broker}')
+        topic_response = 'respuesta_central'
+
+        # Crear un hilo para manejar las solicitudes de taxis con Kafka
+        kafka_thread = threading.Thread(target=handle_request, args=(consumer, producer, topic_response))
+        kafka_thread.start()
 
         while True:
             client_socket, addr = server_socket.accept()
