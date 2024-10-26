@@ -2,6 +2,7 @@ import sys
 import time
 from kafka import KafkaProducer, KafkaConsumer
 
+
 def get_parameters():
     if len(sys.argv) != 4:
         print(f"Error: python3 EC_Customer.py <IP Broker> <Port Broker>  <ID Client>")
@@ -14,8 +15,8 @@ def get_parameters():
     return ip_broker, port_broker, id_client
 
 
-def request_taxi(producer, topic, id_client, destiny):
-    message = f"{id_client}#{destiny}"
+def request_taxi(producer, topic, id_client, destination):
+    message = f"{id_client}#{destination}"
     producer.send(topic, message.encode('utf-8'))
     print(f"Enviando solicitud a EC_Central: {message}")
 
@@ -45,10 +46,10 @@ def main():
 
     # Leer archivo con los destinos
     with open('destinos.txt', 'r') as file:
-        destinies = file.readlines()
+        destinations = file.readlines()
 
-    for destiny in destinies:
-        request_taxi(producer, topic_producer, id_client, destiny.strip())
+    for destination in destinations:
+        request_taxi(producer, topic_producer, id_client, destination.strip())
         answer = get_answer(consumer)
 
         if answer == "OK":
