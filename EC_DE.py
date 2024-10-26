@@ -94,6 +94,9 @@ def move_taxi_to_destination(destination, socket_central, id_taxi):
     if POSITION_TAXI == destination:
         print(f"Taxi {id_taxi} ha llegado a su destino: {destination}")
 
+        if SOCKET_SENSOR:
+            SOCKET_SENSOR.send(b'STOP')
+
     IS_MOVING_THREAD_RUNNING = False
 
 
@@ -177,6 +180,9 @@ def handle_central_commands(central_socket, id_taxi):
 
                 central_socket.send("OK".encode('UTF-8'))
 
+                if SOCKET_SENSOR:
+                    SOCKET_SENSOR.send(b'STOP')
+
             elif message.startswith("RESUME#"):
                 with LOCK_STATUS_TAXI:
                     print("Recibido comando para reanudar el taxi")
@@ -185,7 +191,7 @@ def handle_central_commands(central_socket, id_taxi):
                 central_socket.send("OK".encode('UTF-8'))
 
                 if SOCKET_SENSOR:
-                    SOCKET_SENSOR.send(b'RESUME')
+                    SOCKET_SENSOR.send(b'START')
 
                 start_moving_thread(central_socket, id_taxi)
 
@@ -193,6 +199,9 @@ def handle_central_commands(central_socket, id_taxi):
                 parts = message.split("#")
                 DESTINATION_TAXI = eval(parts[2])
                 print(f"Recibido nuevo destino: {DESTINATION_TAXI}")
+
+                if SOCKET_SENSOR:
+                    SOCKET_SENSOR.send(b'START')
 
                 with LOCK_STATUS_TAXI:
                     STATUS_TAXI = "OK"
@@ -202,6 +211,9 @@ def handle_central_commands(central_socket, id_taxi):
             elif message.startswith("RETURN#"):
                 print("Recibido comando para volver a la base [1,1]")
                 DESTINATION_TAXI = (1, 1)
+
+                if SOCKET_SENSOR:
+                    SOCKET_SENSOR.send(b'START')
 
                 with LOCK_STATUS_TAXI:
                     STATUS_TAXI = "OK"
