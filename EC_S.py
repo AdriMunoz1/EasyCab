@@ -3,21 +3,26 @@ import time
 import threading
 import sys
 
+
 # Variable de control global para el envío de OK
 is_running = True
 pause_ok = threading.Event()  # Para pausar y reanudar el envío de OK
 
+
 # Obtener los parámetros del taxi
 def get_parameters():
     if len(sys.argv) <= 2:
-        print("Usage: python EC_S.py <Taxi_IP> <Taxi_Port>")
+        print("Usage: python EC_S.py <IP DE> <Port DE>")
         sys.exit(1)
-    ip_taxi = sys.argv[1]
-    port_taxi = int(sys.argv[2])
-    return ip_taxi, port_taxi
+
+    ip_de = sys.argv[1]
+    port_de = int(sys.argv[2])
+
+    return ip_de, port_de
+
 
 # Función para enviar mensajes de OK (normal) o KO (incidencia)
-def sensor_state(sock):
+def sensor_state(sock, ip_taxi, port_taxi):
     try:
         while True:
             pause_ok.wait()  # Espera a que el envío de OK esté permitido
@@ -27,13 +32,14 @@ def sensor_state(sock):
             time.sleep(1)  # Simulación de envío periódico
     except (BrokenPipeError, ConnectionResetError) as e:
         print(f"Error al enviar OK: {e}. Intentando reconectar...")
-        reconnect_sensor(sock)
+        reconnect_sensor(sock, ip_taxi, port_taxi)
+
 
 # Función para manejar el envío del KO
-def handle_ko(sock):
+def handle_ko(sock, ip_taxi, port_taxi):
     try:
         while True:
-            input("Presiona Enter para simular una pausa de 5 segundos...")
+            input("Presiona Enter para simular una indicencia (KO)...")
             sock.sendall(b'KO')  # Enviar "KO" al EC_DE
             print("Sensor enviando: KO. Deteniendo taxi por 5 segundos.")
             pause_ok.clear()  # Pausar el envío de OK
@@ -48,11 +54,11 @@ def handle_ko(sock):
 
     except (BrokenPipeError, ConnectionResetError) as e:
         print(f"Error al enviar KO: {e}. Intentando reconectar...")
-        reconnect_sensor(sock)
+        reconnect_sensor(sock, ip_taxi, port_taxi)
+
 
 # Función para intentar reconectar si la conexión se pierde
-def reconnect_sensor(sock):
-    global ip_taxi, port_taxi
+def reconnect_sensor(sock, ip_taxi, port_taxi):
     while True:
         try:
             print(f"Reconectando a {ip_taxi}:{port_taxi}...")
@@ -63,9 +69,9 @@ def reconnect_sensor(sock):
             print(f"Error en la reconexión: {e}")
             time.sleep(3)  # Esperar antes de intentar reconectar nuevamente
 
+
 # Función principal del sensor EC_S
 def main():
-    global ip_taxi, port_taxi
     ip_taxi, port_taxi = get_parameters()
 
     # Crear un socket
@@ -77,16 +83,17 @@ def main():
 
             # Iniciar el envío continuo de mensajes OK en un hilo separado
             pause_ok.set()  # Permitir inicialmente el envío de OK
-            sensor_thread = threading.Thread(target=sensor_state, args=(s,))
+            sensor_thread = threading.Thread(target=sensor_state, args=(s, ip_taxi, port_taxi))
             sensor_thread.daemon = True
             sensor_thread.start()
 
             # Manejar la simulación del KO en el hilo principal
-            handle_ko(s)
+            handle_ko(s, ip_taxi, port_taxi)
 
         except (BrokenPipeError, ConnectionRefusedError) as e:
             print(f"Error de conexión: {e}. Intentando reconectar...")
-            reconnect_sensor(s)
+            reconnect_sensor(s, ip_taxi, port_taxi)
+
 
 if __name__ == "__main__":
     main()
