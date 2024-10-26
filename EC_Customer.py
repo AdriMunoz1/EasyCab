@@ -3,7 +3,7 @@ import time
 from kafka import KafkaProducer, KafkaConsumer
 
 def get_parameters():
-    if len(sys.argv) <= 3:
+    if len(sys.argv) != 4:
         print(f"Error: python3 EC_Customer.py <IP Broker> <Port Broker>  <ID Client>")
         sys.exit(1)
 
@@ -17,7 +17,7 @@ def get_parameters():
 def request_taxi(producer, topic, id_client, destiny):
     message = f"{id_client}#{destiny}"
     producer.send(topic, message.encode('utf-8'))
-    print(f"Enviando solicitud: {message}")
+    print(f"Enviando solicitud a EC_Central: {message}")
 
 
 def get_answer(consumer):
@@ -31,14 +31,15 @@ def main():
     ip_broker, port_broker, id_client = get_parameters()
 
     # Configurar productor de Kafka
+    topic_producer = 'solicitud_central'
     producer = KafkaProducer(bootstrap_servers=f'{ip_broker}:{port_broker}')
-    topic_request = 'central_topic'
 
     # Configurar consumidor de Kafka para recibir respuestas
+    topic_consumer = 'respuesta_central'
     consumer = KafkaConsumer(
-        'respuesta_central',
+        topic_consumer,
         bootstrap_servers=f'{ip_broker}:{port_broker}',
-        group_id=f"grupo_cliente_{id_client}",
+        group_id=f'{id_client}',
         auto_offset_reset='earliest'
     )
 
@@ -47,13 +48,13 @@ def main():
         destinies = file.readlines()
 
     for destiny in destinies:
-        request_taxi(producer, topic_request, id_client, destiny.strip())
-        respuesta = get_answer(consumer)
+        request_taxi(producer, topic_producer, id_client, destiny.strip())
+        answer = get_answer(consumer)
 
-        if respuesta == "OK":
-            print("Servicio aceptado. Esperando 4 segundos para la próxima solicitud...")
+        if answer == "OK":
+            print("Servicio ACEPTADO. Esperando 4 segundos para la próxima solicitud...")
         else:
-            print("Servicio denegado. Esperando 4 segundos para la próxima solicitud...")
+            print("Servicio DENEGADO. Esperando 4 segundos para la próxima solicitud...")
 
         time.sleep(4)  # Esperar 4 segundos antes de la próxima solicitud
 
