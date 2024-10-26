@@ -5,8 +5,7 @@ import sys
 
 
 # Variable de control global para el envío de OK
-is_running = True
-pause_ok = threading.Event()  # Para pausar y reanudar el envío de OK
+PAUSE_TAXI = threading.Event()  # Para pausar y reanudar el envío de OK
 
 
 # Obtener los parámetros del taxi
@@ -25,7 +24,7 @@ def get_parameters():
 def sensor_state(sock, ip_taxi, port_taxi):
     try:
         while True:
-            pause_ok.wait()  # Espera a que el envío de OK esté permitido
+            PAUSE_TAXI.wait()  # Espera a que el envío de OK esté permitido
             # Se envía "OK" cada segundo mientras no esté pausado
             sock.sendall(b'OK')
             print("Sensor enviando: OK")
@@ -42,7 +41,7 @@ def handle_ko(sock, ip_taxi, port_taxi):
             input("Presiona Enter para simular una indicencia (KO)...")
             sock.sendall(b'KO')  # Enviar "KO" al EC_DE
             print("Sensor enviando: KO. Deteniendo taxi por 5 segundos.")
-            pause_ok.clear()  # Pausar el envío de OK
+            PAUSE_TAXI.clear()  # Pausar el envío de OK
 
             # Esperar 5 segundos antes de continuar
             time.sleep(5)
@@ -50,7 +49,7 @@ def handle_ko(sock, ip_taxi, port_taxi):
             # Reanudar automáticamente después de 5 segundos
             sock.sendall(b'RESUME')  # Enviar "RESUME" al EC_DE para reanudar el taxi
             print("Sensor enviando: RESUME. Reanudando taxi.")
-            pause_ok.set()  # Reanudar el envío de OK
+            PAUSE_TAXI.set()  # Reanudar el envío de OK
 
     except (BrokenPipeError, ConnectionResetError) as e:
         print(f"Error al enviar KO: {e}. Intentando reconectar...")
@@ -82,10 +81,10 @@ def main():
             print(f"Conectado a EC_DE en {ip_taxi}:{port_taxi}")
 
             # Iniciar el envío continuo de mensajes OK en un hilo separado
-            pause_ok.set()  # Permitir inicialmente el envío de OK
-            sensor_thread = threading.Thread(target=sensor_state, args=(s, ip_taxi, port_taxi))
-            sensor_thread.daemon = True
-            sensor_thread.start()
+            PAUSE_TAXI.set()  # Permitir inicialmente el envío de OK
+            thread_sensor = threading.Thread(target=sensor_state, args=(s, ip_taxi, port_taxi))
+            thread_sensor.daemon = True
+            thread_sensor.start()
 
             # Manejar la simulación del KO en el hilo principal
             handle_ko(s, ip_taxi, port_taxi)

@@ -1,145 +1,140 @@
-import socket
 import threading
 import sys
 import time
+from kafka import KafkaProducer, KafkaConsumer
+import socket
 
-# Variable global para manejar el estado del taxi
-taxi_status_lock = threading.Lock()  # Lock para controlar el acceso a taxi_status
-taxi_status = "en movimiento"  # Estado inicial del taxi
-taxi_position = (1, 1)  # Posición inicial del taxi
-destination_position = None  # Posición de destino
-taxi_thread = None  # Hilo para el movimiento del taxi
-sensor_socket = None  # Socket para el sensor
+# Variables globales
+taxi_status_lock = threading.Lock()
+STATUS_TAXI = "OK"
+POSITION_TAXI = (1, 1)
 
-# Obtener los parámetros pasados por línea de comandos
+
 def get_parameters():
-    if len(sys.argv) <= 5:
-        print("Usage: python EC_DE <EC_Central_IP> <EC_Central_Port> <EC_S_IP> <EC_S_Port> <Taxi_ID>")
+    if len(sys.argv) != 8:
+        print("Uso: python EC_DE.py <IP_Central> <Port_Central> <IP_Broker> <Port_Broker> <IP_S> <Port_S> <ID_Taxi>")
         sys.exit(1)
+
     ip_central = sys.argv[1]
     port_central = int(sys.argv[2])
-    broker_ip = sys.argv[3]
-    broker_port = int(sys.argv[4])
-    taxi_id = sys.argv[5]
+    ip_broker = sys.argv[3]
+    port_broker = int(sys.argv[4])
+    ip_s = sys.argv[5]
+    port_s = int(sys.argv[6])
+    id_taxi = int(sys.argv[7])
 
-    return ip_central, port_central, broker_ip, broker_port, taxi_id
+    return ip_central, port_central, ip_broker, port_broker, ip_s, port_s, id_taxi
+
+
+def send_message(socket, message):
+    try:
+        socket.send(message.encode("utf-8"))
+    except Exception as e:
+        print(f"Error al enviar mensaje: {e}")
+
+
+def receive_message(socket):
+    try:
+        return socket.recv(1024).decode("utf-8")
+    except Exception as e:
+        print(f"Error al recibir mensaje: {e}")
+        return ""
+
 
 # Validar el taxi con EC_Central
-def validate_taxi(ip_central, port_central, taxi_id, client_socket):
+def validate_taxi(id_taxi, socket_central):
     try:
-        msg = f"AUTH#{taxi_id}"
-        client_socket.send(msg.encode("utf-8"))
+        msg = f"AUTH#{id_taxi}"
+        socket_central.send(msg.encode("utf-8"))
 
-        response = client_socket.recv(1024).decode("utf-8")
+        response = socket_central.recv(1024).decode("utf-8")
         print(f"Respuesta de EC_Central: {response}")
 
         if response == "OK":
-            print("Taxi authenticated successfully!")
+            print("Taxi SÍ autenticado")
             return True
         else:
-            print("Authentication failed")
+            print("Taxi NO autenticado")
             return False
+
     except Exception as e:
         print(f"Error al autenticar el taxi: {e}")
         return False
 
-def send_taxi_position_to_central(position, central_socket, taxi_id):
+
+# Enviar posición a EC_Central
+def send_taxi_position_to_central(socket_central, id_taxi, position_taxi):
     try:
-        # Enviar la posición actual del taxi a EC_Central
-        message = f"POSITION#{taxi_id}#{position}"
-        central_socket.send(message.encode('utf-8'))
+        message = f"POSITION#{id_taxi}#{position_taxi}"
+        socket_central.send(message.encode('utf-8'))
+
     except Exception as e:
-        print(f"Error al enviar la posición del taxi {taxi_id}: {e}")
+        print(f"Error al enviar la posición del taxi {id_taxi}: {e}")
 
-# Hilo para manejar el movimiento del taxi
-def taxi_movement_thread(central_socket, taxi_id):
-    global destination_position
-    move_taxi_to_destination(destination_position, central_socket, taxi_id)
 
-# Manejo de comandos desde EC_Central
-def handle_central_commands(central_socket, taxi_id):
-    global taxi_status, taxi_position, destination_position, taxi_thread, sensor_socket  # Para actualizar el estado del taxi
-    try:
-        while True:
-            message = central_socket.recv(1024).decode("utf-8")
-            if message.startswith("STOP#"):
-                with taxi_status_lock:
-                    print("Recibido comando para detener el taxi")
-                    taxi_status = "detenido"  # Actualizar el estado a "detenido"
-                central_socket.send("OK".encode('UTF-8'))
-            elif message.startswith("RESUME#"):
-                with taxi_status_lock:
-                    print("Recibido comando para reanudar el taxi")
-                    taxi_status = "en movimiento"  # Reanudar el movimiento
-                central_socket.send("OK".encode('UTF-8'))
+def update_position(destination):
+    x, y = POSITION_TAXI
 
-                if sensor_socket:
-                    sensor_socket.send(b'RESUME')  # Enviar mensaje de reanudación a EC_S
+    if x < destination[0]:
+        x += 1
+    elif x > destination[0]:
+        x -= 1
 
-                # Volver a lanzar el hilo de movimiento si está detenido
-                if taxi_thread and not taxi_thread.is_alive():
-                    taxi_thread = threading.Thread(target=taxi_movement_thread, args=(central_socket, taxi_id))
-                    taxi_thread.start()
-            elif message.startswith("DESTINATION#"):
-                parts = message.split("#")
-                destination_position = eval(parts[2])  # Convertir la posición del destino en tupla
-                print(f"Recibido nuevo destino: {destination_position}")
-                taxi_status = "en movimiento"
-                if taxi_thread and taxi_thread.is_alive():
-                    print("Taxi ya está en movimiento, esperando a que termine o se detenga.")
-                else:
-                    taxi_thread = threading.Thread(target=taxi_movement_thread, args=(central_socket, taxi_id))
-                    taxi_thread.start()
-            elif message.startswith("RETURN#"):
-                print("Recibido comando para volver a la base [1,1]")
-                destination_position = (1, 1)
-                taxi_status = "en movimiento"
-                taxi_thread = threading.Thread(target=taxi_movement_thread, args=(central_socket, taxi_id))
-                taxi_thread.start()
-    except Exception as e:
-        print(f"Error al recibir comandos: {e}")
+    if y < destination[1]:
+        y += 1
+    elif y > destination[1]:
+        y -= 1
 
-# Función para mover el taxi hacia el destino
-def move_taxi_to_destination(destination_position, central_socket, taxi_id):
-    global taxi_status, taxi_position
+    return (x, y)
 
-    if taxi_position is None or destination_position is None:
-        print("Error: Posiciones no inicializadas correctamente.")
-        return
 
-    while taxi_position != destination_position:
-        # Revisar el estado del taxi en cada iteración para detener si es necesario
+def move_taxi_to_destination(producer, destination):
+    while POSITION_TAXI != destination:
         with taxi_status_lock:
-            if taxi_status == "detenido":
-                print(f"Taxi {taxi_id} detenido en {taxi_position}")
-                return  # El taxi se detiene en la posición actual
-
-        # Actualizar posición en eje X
-        if taxi_position[0] < destination_position[0]:
-            taxi_position = (taxi_position[0] + 1, taxi_position[1])
-        elif taxi_position[0] > destination_position[0]:
-            taxi_position = (taxi_position[0] - 1, taxi_position[1])
-
-        # Actualizar posición en eje Y
-        if taxi_position[1] < destination_position[1]:
-            taxi_position = (taxi_position[0], taxi_position[1] + 1)
-        elif taxi_position[1] > destination_position[1]:
-            taxi_position = (taxi_position[0], taxi_position[1] - 1)
-
-        # Simular el movimiento con un retardo
+            if STATUS_TAXI == "KO":
+                print(f"Taxi detenido en {POSITION_TAXI}")
+                return
+        position_taxi = update_position(destination)
         time.sleep(1)
+        send_taxi_position_to_central(producer)
+        print(f"Taxi moviéndose a {position_taxi}")
 
-        # Enviar la nueva posición al EC_Central
-        send_taxi_position_to_central(taxi_position, central_socket, taxi_id)
-        print(f"Taxi {taxi_id} moviéndose a {taxi_position}")
 
-    # Si el taxi no fue detenido, ha llegado al destino
-    if taxi_position == destination_position:
-        print(f"Taxi {taxi_id} ha llegado a su destino: {destination_position}")
+# Iniciar el hilo de movimiento
+def start_moving_thread(socket_central, id_taxi):
+    if not is_moving_thread_running:
+        taxi_thread = threading.Thread(target=move_taxi_to_destination, args=(destination_position, socket_central, id_taxi))
+        taxi_thread.start()
+        is_moving_thread_running = True
+
+
+def handle_central_commands(socket_central, thread_taxi, producer, consumer, destination):
+    for message in consumer:
+        command = message.value.decode('utf-8')
+        print(f"Comando recibido: {command}")
+        if command.startswith("STOP#"):
+            with taxi_status_lock:
+                STATUS_TAXI = "KO"
+            send_message(socket_central, "OK")
+        elif command.startswith("RESUME#"):
+            with taxi_status_lock:
+                STATUS_TAXI = "OK"
+            send_message(socket_central, "OK")
+            if thread_taxi and not thread_taxi.is_alive():
+                taxi_thread = threading.Thread(target=move_taxi_to_destination, args=(producer, destination))
+                taxi_thread.start()
+        elif command.startswith("DESTINATION#"):
+            destination = eval(command.split("#")[2])
+            print(f"Nuevo destino: {destination}")
+            if thread_taxi and thread_taxi.is_alive():
+                print("Taxi en movimiento, esperando a que termine.")
+            else:
+                taxi_thread = threading.Thread(target=move_taxi_to_destination, args=(producer, destination))
+                taxi_thread.start()
+
 
 # Función para manejar señales de EC_S
 def handle_sensor_signals(client_socket, addr, central_socket, taxi_id):
-    global taxi_status, sensor_socket
     try:
         sensor_socket = client_socket  # Guardar el socket para usarlo en reanudación
         while True:
@@ -149,13 +144,13 @@ def handle_sensor_signals(client_socket, addr, central_socket, taxi_id):
                 msg = f"STOP#{taxi_id}"
                 central_socket.send(msg.encode("utf-8"))
                 with taxi_status_lock:
-                    taxi_status = "detenido"  # Detener el taxi
+                    STATUS_TAXI = "KO"  # Detener el taxi
                 client_socket.send("KO".encode("utf-8"))
                 time.sleep(5)  # Pausa de 5 segundos
                 msg = f"RESUME#{taxi_id}"
                 central_socket.send(msg.encode("utf-8"))
                 with taxi_status_lock:
-                    taxi_status = "en movimiento"  # Reanudar el taxi
+                    STATUS_TAXI = "OK"  # Reanudar el taxi
             #else:
               #  print(f"Señal no reconocida del sensor {addr}: {signal}")
     except Exception as e:
@@ -163,49 +158,51 @@ def handle_sensor_signals(client_socket, addr, central_socket, taxi_id):
     finally:
         client_socket.close()
 
+
 # Escuchar señales de EC_S
-def run_sensor_server(taxi_id):
-    server_ip = "localhost"
-    port = 8001 + int(taxi_id)
+def run_sensor_server(socket_central, ip_central, id_taxi):
+    port_taxi = 8000 + id_taxi
+    socket_taxi = None
+
     try:
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.bind((server_ip, port))
-        server.listen()
-        print(f"Servidor de sensores del taxi {taxi_id} escuchando en {server_ip}:{port}")
+        socket_taxi = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        socket_taxi.bind((ip_central, port_taxi))
+        socket_taxi.listen()
+        print(f"Servidor de sensores del taxi {id_taxi} escuchando en {ip_central}:{port_taxi}")
 
         while True:
-            client_socket, addr = server.accept()
+            socket_client, addr = socket_taxi.accept()
             print(f"Conexión aceptada de {addr[0]}:{addr[1]}")
-            thread = threading.Thread(target=handle_sensor_signals, args=(client_socket, addr, central_socket, taxi_id))
+            thread = threading.Thread(target=handle_sensor_signals, args=(socket_client, addr, socket_central, id_taxi))
             thread.start()
     except Exception as e:
         print(f"Error en el servidor del taxi: {e}")
     finally:
-        server.close()
+        socket_taxi.close()
 
-# Función principal del taxi
+
 def main():
-    global central_socket
-    ip_central, port_central, broker_ip, broker_port, taxi_id = get_parameters()
+    ip_central, port_central, ip_broker, port_broker, ip_s, port_s, id_taxi = get_parameters()
 
-    # Establecer la conexión inicial con EC_Central
-    central_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    central_socket.connect((ip_central, port_central))
+    socket_central = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    socket_central.bind((ip_central, port_central))
 
-    # Validar el taxi con la conexión establecida
-    if validate_taxi(ip_central, port_central, taxi_id, central_socket):
+    # Validar el taxi con el servidor central usando la IP y el puerto proporcionados
+    if validate_taxi(ip_central, port_central, id_taxi):
+
         # Ejecutar el servidor del taxi para escuchar señales de EC_S
-        server_thread = threading.Thread(target=run_sensor_server, args=(taxi_id,))
-        server_thread.start()
+        thread_taxi = threading.Thread(target=run_sensor_server, args=(socket_central, ip_central, id_taxi))
+        thread_taxi.start()
 
         # Iniciar un hilo para manejar comandos de EC_Central
-        central_command_thread = threading.Thread(target=handle_central_commands, args=(central_socket, taxi_id))
+        central_command_thread = threading.Thread(target=handle_central_commands, args=(socket_central, id_taxi))
         central_command_thread.start()
 
     else:
-        print("Autenticación fallida. Por favor, intenta nuevamente.")
-        central_socket.close()
+        print("Autenticación fallida.")
+        if socket_central:
+            socket_central.close()
 
-########################## MAIN ##########################
+
 if __name__ == "__main__":
     main()
