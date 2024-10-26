@@ -15,8 +15,8 @@ def get_parameters():
     return ip_broker, port_broker, id_client
 
 
-def request_taxi(producer, topic, id_client, destination):
-    message = f"{id_client}#{destination}"
+def request_taxi(producer, topic, id_client, destination, position_customer):
+    message = f"{id_client}#{destination}#{position_customer}"
     producer.send(topic, message.encode('utf-8'))
     print(f"Enviando solicitud a EC_Central: {message}")
 
@@ -30,6 +30,7 @@ def get_answer(consumer):
 
 def main():
     ip_broker, port_broker, id_client = get_parameters()
+    coor_x = coor_y = 3
 
     # Configurar productor de Kafka
     topic_producer = 'solicitud_central'
@@ -49,7 +50,8 @@ def main():
         destinations = file.readlines()
 
     for destination in destinations:
-        request_taxi(producer, topic_producer, id_client, destination.strip())
+        position_customer = f"({coor_x}, {coor_y})"
+        request_taxi(producer, topic_producer, id_client, destination.strip(), position_customer)
         answer = get_answer(consumer)
 
         if answer == "OK":

@@ -6,7 +6,7 @@ import time
 from kafka import KafkaProducer, KafkaConsumer
 
 
-available_taxis = []    # Lista para almacenar los taxis disponibles
+AVAILABLE_TAXIS = []    # Lista para almacenar los taxis disponibles
 
 
 def get_parameters():
@@ -21,82 +21,118 @@ def get_parameters():
     return port_central, ip_broker, port_broker
 
 
+def get_ip():
+    # Crear un socket para obtener la IP local
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    try:
+        # No necesitas conectarte a un servidor, solo necesitas una dirección válida
+        s.connect(("8.8.8.8", 80))  # Conéctate a un servidor público (Google DNS)
+        ip_address = s.getsockname()[0]  # Obtén la dirección IP de la máquina
+
+    finally:
+        s.close()  # Cierra el socket
+
+    return ip_address
+
+
 def load_city_map(filename):
     city_map = [['' for _ in range(20)] for _ in range(20)]
+
     try:
         with open(filename, 'r') as file:
             for line in file:
                 parts = line.strip().split()
+
                 if len(parts) == 3:
-                    id_localizacion = parts[0]
+                    id_site = parts[0]
                     coord_x = int(parts[1])
                     coord_y = int(parts[2])
-                    city_map[coord_x][coord_y] = id_localizacion
+                    city_map[coord_x][coord_y] = id_site
+
         print("Mapa de la ciudad cargado correctamente.")
+
     except Exception as e:
         print(f"Error al cargar el mapa de la ciudad: {e}")
+
     return city_map
 
 
-# Función para enviar un comando al taxi (STOP, RESUME, DESTINATION, RETURN)
-def send_command(client_sockets, command, id_taxi, extra_param=None):
+# Función para actualizar el estado de un taxi en la base de datos
+def update_taxi_status(status_taxi, id_taxi):
     try:
-        for client_socket in client_sockets:
-            if client_socket["taxi_id"] == id_taxi:
+        connection = sqlite3.connect('taxis.db')
+        cursor = connection.cursor()
+        cursor.execute('UPDATE taxis SET estado = ? WHERE id = ?', (status_taxi, id_taxi))
+        connection.commit()
+        connection.close()
+        print(f"Taxi {id_taxi} actualizado a {status_taxi}.")
+
+    except sqlite3.Error as e:
+        print(f"Error al actualizar el estado del taxi {id_taxi}: {e}")
+
+
+# Función para enviar un comando al taxi (STOP, RESUME, DESTINATION, RETURN)
+def send_command(sockets_taxi, command, id_taxi, destination = None):
+    try:
+        for socket_taxi in sockets_taxi:
+            if socket_taxi["taxi_id"] == id_taxi:
                 if command == "DESTINATION":
-                    msg = f"{command}#{id_taxi}#{extra_param}"
+                    msg = f"{command}#{id_taxi}#{destination}"
+
                 else:
                     msg = f"{command}#{id_taxi}"
 
-                client_socket["socket"].send(msg.encode('utf-8'))
+                socket_taxi["socket"].send(msg.encode('utf-8'))
                 print(f"Comando {command} enviado al taxi {id_taxi}")
 
                 # Recibir respuesta del taxi solo para los comandos RESUME y DESTINATION
                 if command in ["RESUME", "DESTINATION"]:
-                    mensaje = client_socket["socket"].recv(1024).decode('utf-8')
-                    if mensaje == 'OK' and command == 'STOP':
+                    message = socket_taxi["socket"].recv(1024).decode('utf-8')
+
+                    if message == 'OK' and command == 'STOP':
                         update_taxi_status("KO", id_taxi)
-                    elif mensaje == 'OK' and command == 'RESUME':
+
+                    elif message == 'OK' and command == 'RESUME':
                         update_taxi_status("OK", id_taxi)
+
                 return
 
         print(f"Taxi {id_taxi} no encontrado.")
+
     except Exception as e:
         print(f"Error al enviar el comando {command} al taxi {id_taxi}: {e}")
 
 
 # Hilo para manejar los comandos del usuario
-def command_input_handler(client_sockets):
+def handle_command_input(sockets_taxi):
     while True:
+        if not AVAILABLE_TAXIS:
+            print("No hay taxis registrados. Esperando a que un taxi se registre...")
+            time.sleep(5)  # Esperar un momento antes de volver a comprobar
+            continue  # Volver al inicio del bucle y comprobar nuevamente
+
         id_taxi = input("Introduce el ID del taxi: ")
         command = input("Introduce el número del comando (1.STOP/2.RESUME/3.DESTINATION/4.RETURN) para el taxi: ")
 
         if command in ["1", "2"]:
             if command == "1":
                 command = "STOP"
+
             else:
                 command = "RESUME"
-            send_command(client_sockets, command, id_taxi)
+
+            send_command(sockets_taxi, command, id_taxi)
+
         elif command == "3":
-            new_destination = input("Introduce la nueva localización (ID_LOCALIZACION): ")
-            send_command(client_sockets, "DESTINATION", id_taxi, new_destination)
+            destination = input("Introduce la nueva localización (ID_LOCALIZACION): ")
+            send_command(sockets_taxi, "DESTINATION", id_taxi, destination)
+
         elif command == "4":
-            send_command(client_sockets, "RETURN", id_taxi)
+            send_command(sockets_taxi, "RETURN", id_taxi)
+
         else:
             print("Comando no válido. Usa 1, 2, 3 o 4.")
-
-
-# Función para actualizar el estado de un taxi en la base de datos
-def update_taxi_status(status, id_taxi):
-    try:
-        connection = sqlite3.connect('taxis.db')
-        cursor = connection.cursor()
-        cursor.execute('UPDATE taxis SET estado = ? WHERE id = ?', (status, id_taxi))
-        connection.commit()
-        connection.close()
-        print(f"Taxi {id_taxi} actualizado a {status}.")
-    except sqlite3.Error as e:
-        print(f"Error al actualizar el estado del taxi {id_taxi}: {e}")
 
 
 # Función para autenticar el taxi
@@ -112,146 +148,194 @@ def authenticate_taxi(id_taxi):
             print(f"Taxi {id_taxi} autenticado correctamente.")
             update_taxi_status("OK", int(id_taxi))
             return True
+
         else:
             print(f"Taxi {id_taxi} no está registrado.")
             return False
+
     except sqlite3.Error as e:
         print(f"Error al autenticar el taxi: {e}")
         return False
 
 
+def move_taxi_to_destination(id_taxi, position_taxi, position_customer, destination):
+    # Mover taxi a la posición del cliente
+    while position_taxi != position_customer:
+        # Lógica para mover el taxi un paso hacia el cliente
+        position_taxi = (position_taxi[0] + 1 if position_taxi[0] < position_customer[0] else position_taxi[0],
+                            position_taxi[1] + 1 if position_taxi[1] < position_customer[1] else position_taxi[1])
+        time.sleep(1)  # Simular tiempo de movimiento
+        print(f"Taxi {id_taxi} en {position_taxi}")
+
+    # Una vez en la posición del cliente, mover al destino
+    while position_taxi != destination:
+        position_taxi = (position_taxi[0] + 1 if position_taxi[0] < destination[0] else position_taxi[0],
+                            position_taxi[1] + 1 if position_taxi[1] < destination[1] else position_taxi[1])
+        time.sleep(1)  # Simular tiempo de movimiento
+        print(f"Taxi {id_taxi} en {position_taxi}")
+
+    print(f"Taxi {id_taxi} ha llegado a su destino {destination}.")
+
+
 # Función para manejar las conexiones con los taxis
-def handle_client(client_socket, addr, city_map, client_sockets):
-    taxi_id = None
-    taxi_position = None
+def handle_taxis(sockets_taxi, socket_taxi, addr, city_map):
+    id_taxi = None
+    position_taxi = None
+
     try:
         while True:
-            request = client_socket.recv(1024).decode("utf-8")
+            request = socket_taxi.recv(1024).decode("utf-8")
             if not request:
                 break
 
             if request.startswith("AUTH#"):
-                taxi_id = request.split("#")[1]
-                print(f"Autenticando taxi {taxi_id}")
+                id_taxi = request.split("#")[1]
+                print(f"Autenticando taxi {id_taxi}")
 
-                if authenticate_taxi(taxi_id):
+                if authenticate_taxi(id_taxi):
                     response = "OK"
-                    client_sockets.append({"socket": client_socket, "taxi_id": taxi_id})
+                    sockets_taxi.append({"socket": socket_taxi, "taxi_id": id_taxi})
 
-                    available_taxis.append(taxi_id)  # Agregar taxi a la lista de disponibles
+                    AVAILABLE_TAXIS.append(id_taxi)  # Agregar taxi a la lista de disponibles
 
-                    taxi_position = (1, 1)
-                    city_map[taxi_position[0]][taxi_position[1]] = f'T{taxi_id} verde'
+                    position_taxi = (1, 1)
+                    city_map[position_taxi[0]][position_taxi[1]] = f'T{id_taxi} verde'
+
                 else:
                     response = "KO"
-                client_socket.send(response.encode("utf-8"))
+
+                socket_taxi.send(response.encode("utf-8"))
 
             elif request.startswith("STOP#"):
-                if taxi_id:
-                    city_map[taxi_position[0]][taxi_position[1]] = f'T{taxi_id} rojo'
-                    update_taxi_status("KO", taxi_id)
+                if id_taxi:
+                    city_map[position_taxi[0]][position_taxi[1]] = f'T{id_taxi} rojo'
+                    update_taxi_status("KO", id_taxi)
 
-                    available_taxis.remove(taxi_id)  # Remover taxi de la lista de disponibles
+                    AVAILABLE_TAXIS.remove(id_taxi)  # Remover taxi de la lista de disponibles
 
-                    print(f"Taxi {taxi_id} detenido y marcado como KO")
+                    print(f"Taxi {id_taxi} detenido y marcado como KO")
+
                 else:
                     response = "Taxi no autenticado"
-                    client_socket.send(response.encode("utf-8"))
+                    socket_taxi.send(response.encode("utf-8"))
 
             elif request.startswith("RESUME#"):
-                if taxi_id:
-                    city_map[taxi_position[0]][taxi_position[1]] = f'T{taxi_id} verde'
-                    update_taxi_status("OK", taxi_id)
+                if id_taxi:
+                    city_map[position_taxi[0]][position_taxi[1]] = f'T{id_taxi} verde'
+                    update_taxi_status("OK", id_taxi)
 
-                    available_taxis.append(taxi_id)  # Agregar taxi a la lista de disponibles
+                    AVAILABLE_TAXIS.append(id_taxi)  # Agregar taxi a la lista de disponibles
 
-                    print(f"Taxi {taxi_id} reanudado y marcado como OK")
+                    print(f"Taxi {id_taxi} reanudado y marcado como OK")
+
                 else:
                     response = "Taxi no autenticado"
-                    client_socket.send(response.encode("utf-8"))
+                    socket_taxi.send(response.encode("utf-8"))
 
             elif request.startswith("DESTINATION#"):
-                if taxi_id:
-                    id_localizacion = request.split("#")[2]
+                if id_taxi:
+                    # Extraer información del destino y la posición del cliente
+                    parts = request.split("#")
+                    id_site = parts[2]
+                    position_customer = (int(parts[3]), int(parts[4]))  # La posición del cliente
+
                     for x in range(20):
                         for y in range(20):
-                            if city_map[x][y] == id_localizacion:
-                                new_destination = (x, y)
-                                if taxi_position:
-                                    city_map[taxi_position[0]][taxi_position[1]] = ''
-                                taxi_position = new_destination
-                                city_map[new_destination[0]][new_destination[1]] = f'T{taxi_id} verde'
-                                client_socket.send(f"DESTINATION#{taxi_id}#{new_destination}".encode("utf-8"))
-                                print(f"Taxi {taxi_id} cambiado a destino {new_destination}")
+                            if city_map[x][y] == id_site:
+                                next_position_taxi = (x, y)
+
+                                if position_taxi:
+                                    city_map[position_taxi[0]][position_taxi[1]] = ''
+
+                                position_taxi = next_position_taxi
+                                city_map[next_position_taxi[0]][next_position_taxi[1]] = f'T{id_taxi} verde'
+                                socket_taxi.send(f"DESTINATION#{id_taxi}#{next_position_taxi}".encode("utf-8"))
+                                print(f"Taxi {id_taxi} cambiado a destino {next_position_taxi}")
+
+                                # Iniciar el hilo para mover el taxi usando la posición del cliente
+                                movement_thread = threading.Thread(target=move_taxi_to_destination,
+                                                                   args=(id_taxi, position_taxi, position_customer, next_position_taxi))
+                                movement_thread.start()  # Inicia el hilo para mover el taxi
                                 break
+
                 else:
                     response = "Taxi no autenticado"
-                    client_socket.send(response.encode("utf-8"))
+                    socket_taxi.send(response.encode("utf-8"))
 
             elif request.startswith("RETURN#"):
-                if taxi_id:
-                    if taxi_position:
-                        city_map[taxi_position[0]][taxi_position[1]] = ''
-                    taxi_position = (1, 1)
-                    city_map[1][1] = f'T{taxi_id} verde'
-                    client_socket.send(f"RETURN#{taxi_id}".encode("utf-8"))
-                    print(f"Taxi {taxi_id} regresando a la base")
+                if id_taxi:
+                    if position_taxi:
+                        city_map[position_taxi[0]][position_taxi[1]] = ''
+                    position_taxi = (1, 1)
+                    city_map[1][1] = f'T{id_taxi} verde'
+                    socket_taxi.send(f"RETURN#{id_taxi}".encode("utf-8"))
+                    print(f"Taxi {id_taxi} regresando a la base")
+
                 else:
                     response = "Taxi no autenticado"
-                    client_socket.send(response.encode("utf-8"))
+                    socket_taxi.send(response.encode("utf-8"))
 
     except Exception as e:
         print(f"Error: {e}")
 
     finally:
-        if taxi_id:
-            update_taxi_status("KO", taxi_id)
-            client_sockets[:] = [cs for cs in client_sockets if cs["taxi_id"] != taxi_id]
+        if id_taxi:
+            update_taxi_status("KO", id_taxi)
+            sockets_taxi[:] = [cs for cs in sockets_taxi if cs["taxi_id"] != id_taxi]
 
-            available_taxis.remove(taxi_id)  # Remover taxi de la lista de disponibles
+            AVAILABLE_TAXIS.remove(id_taxi)  # Remover taxi de la lista de disponibles
 
-            if taxi_position:
-                city_map[taxi_position[0]][taxi_position[1]] = ''
-            print(f"Taxi {taxi_id} desconectado y marcado como KO.")
-            client_socket.close()
+            if position_taxi:
+                city_map[position_taxi[0]][position_taxi[1]] = ''
+
+            print(f"Taxi {id_taxi} desconectado y marcado como KO.")
+            socket_taxi.close()
             print(f"Conexión con {addr[0]}:{addr[1]} cerrada.")
 
 
-# Función para manejar solicitudes de taxis con Kafka
-def handle_request(consumer, producer, topic_producer):
+# Función para manejar solicitudes de customer con Kafka
+def handle_customers(sockets_taxi, consumer, producer, topic_producer):
     for message in consumer:
         request = message.value.decode('utf-8')
-        id_client, destiny = request.split('#')
-        print(f"Solicitud recibida de {id_client} para destino {destiny}")
+        id_customer, destination = request.split('#')
+
+        destination = destination.strip("() ")
+
+        print(f"Solicitud recibida de {id_customer} para destino {destination}")
 
         time.sleep(2)  # Simular tiempo de procesamiento
 
         # Aquí se decide si se acepta o se rechaza la solicitud
-        if available_taxis:
+        if AVAILABLE_TAXIS:
             # Si hay taxis disponibles, aceptar la solicitud
-            taxi_id = available_taxis.pop(0)  # Asigna el primer taxi disponible
-            response = f"OK#{taxi_id}"  # Respuesta con el ID del taxi
+            id_taxi = AVAILABLE_TAXIS.pop(0)  # Asigna el primer taxi disponible
+
+            # Enviar destino al taxi
+            send_command(sockets_taxi, "DESTINATION", id_taxi, destination)
+
+            response = f"OK#{id_taxi}"  # Respuesta con el ID del taxi
         else:
             # Si no hay taxis disponibles, denegar la solicitud
             response = "DENEGADO"
 
         producer.send(topic_producer, response.encode('utf-8'))
-        print(f"Respuesta enviada a {id_client}: {response}")
+        print(f"Respuesta enviada a {id_customer}: {response}")
 
 
 # Función para ejecutar el servidor EC_Central
 def run_server(city_map):
     port_central, ip_broker, port_broker = get_parameters()
     ip_central = "localhost"     # Hay que poner la de la máquina
+    #ip_central = get_ip()
 
-    client_sockets = []
+    sockets_taxi = []
 
-    server_socket = None
+    socket_central = None
 
     try:
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.bind((ip_central, port_central))
-        server_socket.listen()
+        socket_central = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        socket_central.bind((ip_central, port_central))
+        socket_central.listen()
         print(f"EC_Central escuchando en {ip_central}:{port_central}")
 
         # Configurar consumidor de Kafka para recibir solicitudes
@@ -268,21 +352,21 @@ def run_server(city_map):
         producer = KafkaProducer(bootstrap_servers=f'{ip_broker}:{port_broker}')
 
         # Crear un hilo para manejar las solicitudes de taxis con Kafka
-        kafka_thread = threading.Thread(target=handle_request, args=(consumer, producer, topic_producer))
+        kafka_thread = threading.Thread(target=handle_customers, args=(sockets_taxi, consumer, producer, topic_producer))
         kafka_thread.start()
 
-        threading.Thread(target=command_input_handler, args=(client_sockets,)).start()
+        threading.Thread(target=handle_command_input, args=(sockets_taxi,)).start()
 
         while True:
-            client_socket, addr = server_socket.accept()
+            socket_taxi, addr = socket_central.accept()
             print(f"Conexión aceptada de {addr[0]}:{addr[1]}")
-            thread = threading.Thread(target=handle_client, args=(client_socket, addr, city_map, client_sockets))
+            thread = threading.Thread(target=handle_taxis, args=(sockets_taxi, socket_taxi, addr, city_map))
             thread.start()
 
     except Exception as e:
         print(f"Error en el servidor: {e}")
     finally:
-        server_socket.close()
+        socket_central.close()
 
 
 # Ejecutar el servidor EC_Central
