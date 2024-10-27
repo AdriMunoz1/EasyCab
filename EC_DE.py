@@ -1,7 +1,9 @@
+import json
 import socket
 import threading
 import sys
 import time
+from kafka import KafkaProducer, KafkaConsumer
 
 # Variables globales
 STATUS_TAXI = "OK"                      # Estado del taxi -> OK, KO
@@ -111,7 +113,7 @@ def start_moving_thread(socket_central, id_taxi):
 
 
 # Manejar señales de EC_S
-def handle_sensor_signals(socket_sensor, addr, socket_central, id_taxi):
+def handle_signals_sensor(socket_sensor, addr, socket_central, id_taxi):
     global SOCKET_SENSOR, STATUS_TAXI
 
     SOCKET_SENSOR = socket_sensor
@@ -143,7 +145,7 @@ def handle_sensor_signals(socket_sensor, addr, socket_central, id_taxi):
 
 
 # Escuchar señales de EC_S
-def run_sensor_server(socket_central, ip_s, port_s, id_taxi):
+def run_server_sensor(socket_central, ip_s, port_s, id_taxi):
     socket_taxi = None
 
     try:
@@ -155,7 +157,7 @@ def run_sensor_server(socket_central, ip_s, port_s, id_taxi):
         while True:
             socket_sensor, addr = socket_taxi.accept()
             print(f"Conexión aceptada de {addr[0]}:{addr[1]}")
-            thread_taxi = threading.Thread(target=handle_sensor_signals, args=(socket_sensor, addr, socket_central, id_taxi))
+            thread_taxi = threading.Thread(target=handle_signals_sensor, args=(socket_sensor, addr, socket_central, id_taxi))
             thread_taxi.start()
 
     except Exception as e:
@@ -166,7 +168,7 @@ def run_sensor_server(socket_central, ip_s, port_s, id_taxi):
 
 
 # Manejador de comandos de EC_Central
-def handle_central_commands(central_socket, id_taxi):
+def handle_commands_central(central_socket, id_taxi):
     global STATUS_TAXI, DESTINATION_TAXI, SOCKET_SENSOR
 
     try:
@@ -224,6 +226,26 @@ def handle_central_commands(central_socket, id_taxi):
         print(f"Error al recibir comandos: {e}")
 
 
+def handle_kafka_messages(consumer, producer, topic_central, id_taxi):
+    global DESTINATION_TAXI, STATUS_TAXI
+
+    try:
+        for message in consumer:
+            command = message.value
+
+            if "destination" in command:
+                DESTINATION_TAXI = tuple(command["destination"])
+                print(f"Recibido nuevo destino por Central: {DESTINATION_TAXI}")
+
+                with LOCK_STATUS_TAXI:
+                    STATUS_TAXI = "OK"
+
+                start_moving_thread(producer, id_taxi)
+
+    except Exception as e:
+        print(f"Error al manejar mensajes de Kafka: {e}")
+
+
 # Función principal
 def main():
     ip_central, port_central, ip_broker, port_broker, ip_s, port_s, id_taxi = get_parameters()
@@ -233,11 +255,32 @@ def main():
 
     if validate_taxi(socket_central, id_taxi):
 
-        server_thread = threading.Thread(target=run_sensor_server, args=(socket_central, ip_s, port_s, id_taxi))
-        server_thread.start()
+        # Crear productor de Kafka
+        producer = KafkaProducer(
+            bootstrap_servers=f"{ip_broker}:{port_broker}",
+            value_serializer=lambda v: json.dumps(v).encode('utf-8')
+        )
 
-        central_command_thread = threading.Thread(target=handle_central_commands, args=(socket_central, id_taxi))
-        central_command_thread.start()
+        # Crear consumidor de Kafka
+        topic_consumer = f"TAXI#{id_taxi}"
+        consumer = KafkaConsumer(
+            topic_consumer,
+            bootstrap_servers=f"{ip_broker}:{port_broker}",
+            auto_offset_reset='earliest',
+            enable_auto_commit=True,
+            value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+        )
+
+        thread_taxi = threading.Thread(target=run_server_sensor, args=(socket_central, ip_s, port_s, id_taxi))
+        thread_taxi.start()
+
+        thread_command_central = threading.Thread(target=handle_commands_central, args=(socket_central, id_taxi))
+        thread_command_central.start()
+
+        # Iniciar thread para manejar mensajes de Kafka
+        thread_central = threading.Thread(target=handle_kafka_messages, args=(consumer, producer, topic_consumer, id_taxi))
+        thread_central.start()
+
     else:
         print("Autenticación fallida.")
         socket_central.close()
