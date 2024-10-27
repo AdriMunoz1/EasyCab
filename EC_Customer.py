@@ -41,7 +41,7 @@ def main():
     consumer = KafkaConsumer(
         topic_consumer,
         bootstrap_servers=f'{ip_broker}:{port_broker}',
-        group_id=f'{id_client}',
+        group_id=f'CUSTOMER#{id_client}',
         auto_offset_reset='earliest'
     )
 

@@ -35,12 +35,11 @@ def validate_taxi(socket_central, id_taxi):
         socket_central.send(msg.encode("utf-8"))
         response = socket_central.recv(1024).decode("utf-8")
         print(f"Respuesta de EC_Central: {response}")
+        return True
 
     except Exception as e:
         print(f"Error al autenticar el taxi: {e}")
         return False
-
-    return True
 
 
 def notify_arrival(socket_central):
@@ -56,9 +55,9 @@ def notify_arrival(socket_central):
         print(f"Error al enviar notificación: {e}")
 
 
-def send_position_to_central(producer):
+def send_position_to_central(producer, id_taxi):
     topic_central = "position_taxi"
-    message = f"{POSITION_TAXI}"
+    message = f"{id_taxi}#{POSITION_TAXI}"
 
     producer.send(topic_central, value=message.encode("utf-8"))
     producer.flush()
@@ -91,7 +90,7 @@ def notify_sensor_ok(socket_central):
         print(f"Error al enviar notificación de reactivación: {e}")
 
 
-def move_taxi(socket_central, producer):
+def move_taxi(socket_central, producer, id_taxi):
     global POSITION_TAXI, DESTINATION, MOVING, STATUS_SENSOR
 
     while POSITION_TAXI != DESTINATION:
@@ -123,7 +122,7 @@ def move_taxi(socket_central, producer):
         print(f"Taxi en nueva posición: {POSITION_TAXI}")
 
         # Enviar la nueva posición a Kafka
-        send_position_to_central(producer)
+        send_position_to_central(producer, id_taxi)
 
         time.sleep(1)  # Esperar un segundo entre movimientos
 
@@ -134,7 +133,7 @@ def move_taxi(socket_central, producer):
     MOVING = False
 
 
-def receive_commands(socket_central, producer):
+def receive_commands(socket_central, producer, id_taxi):
     global DESTINATION, MOVING
 
     try:
@@ -147,7 +146,7 @@ def receive_commands(socket_central, producer):
                     DESTINATION = requested_destination
                     MOVING = True
                     print(f"Nuevo destino asignado: {DESTINATION}")
-                    move_taxi(socket_central, producer)
+                    move_taxi(socket_central, producer, id_taxi)
 
             elif message == "STOP":
                 if MOVING:
@@ -158,14 +157,14 @@ def receive_commands(socket_central, producer):
                 if DESTINATION and not MOVING:
                     print(f"Reanudando movimiento hacia {DESTINATION}.")
                     MOVING = True
-                    move_taxi(socket_central, producer)
+                    move_taxi(socket_central, producer, id_taxi)
 
             elif message.startswith("RETURN"):
                 if not DESTINATION and not MOVING:
                     DESTINATION = (1, 1)  # Regresar a la posición inicial
                     MOVING = True
                     print(f"Regresando a la posición inicial: {DESTINATION}")
-                    move_taxi(socket_central, producer)
+                    move_taxi(socket_central, producer, id_taxi)
 
     except Exception as e:
         print(f"Error al recibir comandos: {e}")
@@ -204,6 +203,13 @@ def main():
     socket_sensor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     try:
+        # Escuchar conexiones del sensor
+        socket_sensor.bind((ip_s, port_s))
+        socket_sensor.listen(1)
+        print("Esperando conexión del sensor...")
+        connection_sensor, _ = socket_sensor.accept()
+        print("Sensor conectado.")
+
         # Conectar a la central
         socket_central.connect((ip_central, port_central))
         print(f"Conectado a EC_Central en {ip_central}:{port_central}")
@@ -214,24 +220,17 @@ def main():
             # Para enviar la posición del taxi a central
             producer = KafkaProducer(bootstrap_servers=f'{ip_broker}:{port_broker}')
 
-            socket_sensor.connect((ip_s, port_s))
-            print(f"Puerto del sensor asignado: {ip_s}:{port_s}")
 
-            # Escuchar conexiones del sensor
-            socket_sensor.listen(1)
-            print("Esperando conexión del sensor...")
-            connection_sensor, _ = socket_sensor.accept()
-            print("Sensor conectado.")
 
             # Iniciar hilo para recibir destinos
-            threading.Thread(target=receive_commands, args=(socket_central, producer), daemon=True).start()
+            threading.Thread(target=receive_commands, args=(socket_central, producer, id_taxi), daemon=True).start()
 
             # Iniciar hilo para escuchar al sensor
             threading.Thread(target=handle_sensor, args=(socket_central, connection_sensor), daemon=True).start()
 
             # Mantener el programa en ejecución para recibir mensajes
             while True:
-                pass
+                time.sleep(1)
 
         else:
             print("Error de autenticación.")
