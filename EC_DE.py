@@ -35,6 +35,10 @@ def validate_taxi(socket_central, id_taxi):
         socket_central.send(msg.encode("utf-8"))
         response = socket_central.recv(1024).decode("utf-8")
         print(f"Respuesta de EC_Central: {response}")
+
+        if response == "KO":
+            return False
+
         return True
 
     except Exception as e:

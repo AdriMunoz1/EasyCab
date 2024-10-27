@@ -157,19 +157,27 @@ def handle_taxi(socket_taxi, address_taxi, city_map):
         while True:
             message = socket_taxi.recv(1024).decode('utf-8')
 
+            if not message:  # Si se recibe un mensaje vacío, el taxi cerró la conexión
+                print(f"Conexión cerrada por el taxi {address_taxi}.")
+                socket_taxi.close()
+                break
+
             if message.startswith("AUTH#"):
                 id_taxi = message.split("#")[1]
 
                 if authenticate_taxi(id_taxi):
                     response = "OK"
+                    socket_taxi.send(response.encode("utf-8"))
                     AVAILABLE_TAXIS.append({"socket": socket_taxi, "taxi_id": id_taxi})
                     taxi_position = (1, 1)
                     city_map[taxi_position[0]][taxi_position[1]] = f'T{id_taxi} verde'
-                    #update_taxi_position(city_map, id_taxi, taxi_position, "moving")
 
                 else:
                     response = "KO"
-                socket_taxi.send(response.encode("utf-8"))
+                    socket_taxi.send(response.encode("utf-8"))
+                    print(f"Taxi {id_taxi} no autenticado. Cerrando conexión.")
+                    socket_taxi.close()  # Cerrar la conexión con el taxi no autenticado
+                    return  # Salir del bucle y finalizar el hilo para este taxi
 
             elif message.startswith("DESTINO:"):
                 # Procesar el mensaje de destino alcanzado
@@ -184,6 +192,15 @@ def handle_taxi(socket_taxi, address_taxi, city_map):
 
             else:
                 print("Mensaje no reconocido de", address_taxi, ":", message)
+
+    except (ConnectionResetError, BrokenPipeError):
+        print(f"Conexión perdida con el taxi {address_taxi}.")
+        # Eliminar taxi de la lista de disponibles
+        for id_taxi, sock in list(AVAILABLE_TAXIS.items()):
+            if sock == socket_taxi:
+                del AVAILABLE_TAXIS[id_taxi]
+                print(f"Taxi {id_taxi} eliminado de la lista de disponibles.")
+                break
 
     except (ConnectionResetError, BrokenPipeError):
         print(f"Conexión perdida con el taxi {address_taxi}.")
@@ -270,14 +287,14 @@ def main():
     # Iniciar hilo para manejar las posiciones de los taxis
     threading.Thread(target=handle_positions, args=(consumer_taxi,), daemon=True).start()
 
-    # Iniciar el hilo para escuchar comandos desde la terminal
-    threading.Thread(target=command_listener, daemon=True).start()
-
     # Configurar servidor de socket para recibir conexiones de taxis
     socket_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     socket_server.bind((ip_central, port_central))
     socket_server.listen(5)
     print(f"EC_Central está en escucha en {ip_central}:{port_central}")
+
+    # Iniciar el hilo para escuchar comandos desde la terminal
+    threading.Thread(target=command_listener, daemon=True).start()
 
     try:
         while True:
