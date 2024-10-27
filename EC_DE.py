@@ -49,7 +49,7 @@ def notify_arrival(socket_central):
         # Enviar notificación al central
         msg = f"DESTINO:{DESTINATION}#ALCANZADO"
         socket_central.send(msg.encode("utf-8"))
-        print(f"Notificación enviada a EC_Central: {msg}")
+        print(f"{msg}")
 
     except Exception as e:
         print(f"Error al enviar notificación: {e}")
@@ -61,7 +61,7 @@ def send_position_to_central(producer, id_taxi):
 
     producer.send(topic_central, value=message.encode("utf-8"))
     producer.flush()
-    print(f"Posición enviada a EC_Central: {POSITION_TAXI}")
+    print(f"{id_taxi}#{POSITION_TAXI}")
 
 
 def notify_sensor_stop(socket_central):
@@ -104,8 +104,6 @@ def move_taxi(socket_central, producer, id_taxi):
             notify_sensor_stop(socket_central)
             return  # Detener el movimiento
 
-        print(f"Moviendo de {POSITION_TAXI} hacia {DESTINATION}")
-
         # Calcular dirección
         if POSITION_TAXI[0] < DESTINATION[0]:  # Mover hacia abajo
             POSITION_TAXI = (POSITION_TAXI[0] + 1, POSITION_TAXI[1])
@@ -118,8 +116,6 @@ def move_taxi(socket_central, producer, id_taxi):
 
         elif POSITION_TAXI[1] > DESTINATION[1]:  # Mover hacia la izquierda
             POSITION_TAXI = (POSITION_TAXI[0], POSITION_TAXI[1] - 1)
-
-        print(f"Taxi en nueva posición: {POSITION_TAXI}")
 
         # Enviar la nueva posición a Kafka
         send_position_to_central(producer, id_taxi)
@@ -159,7 +155,7 @@ def receive_commands(socket_central, producer, id_taxi):
                     MOVING = True
                     move_taxi(socket_central, producer, id_taxi)
 
-            elif message.startswith("RETURN"):
+            elif message == "RETURN":
                 if not DESTINATION and not MOVING:
                     DESTINATION = (1, 1)  # Regresar a la posición inicial
                     MOVING = True
@@ -170,8 +166,8 @@ def receive_commands(socket_central, producer, id_taxi):
         print(f"Error al recibir comandos: {e}")
 
 
-def handle_sensor(socket_central, socket_sensor):
-    global MOVING, STATUS_SENSOR
+def handle_sensor(socket_central, socket_sensor, producer, id_taxi):
+    global MOVING, STATUS_SENSOR, DESTINATION
 
     try:
         while True:
@@ -179,8 +175,14 @@ def handle_sensor(socket_central, socket_sensor):
             if message == "OK":
                 if STATUS_SENSOR == "KO":
                     notify_sensor_ok(socket_central)
-                STATUS_SENSOR = "OK"
-                print("Estado del sensor: OK")
+                    print("Estado del sensor: OK")
+                    STATUS_SENSOR = "OK"
+
+                    # Si hay un destino asignado y el taxi estaba detenido, continuar hacia el destino
+                    if DESTINATION is not None and not MOVING:
+                        MOVING = True
+                        print(f"Reanudando movimiento hacia el destino: {DESTINATION}")
+                        move_taxi(socket_central, producer, id_taxi)
 
             elif message == "KO":
                 STATUS_SENSOR = "KO"
@@ -220,13 +222,11 @@ def main():
             # Para enviar la posición del taxi a central
             producer = KafkaProducer(bootstrap_servers=f'{ip_broker}:{port_broker}')
 
-
-
             # Iniciar hilo para recibir destinos
             threading.Thread(target=receive_commands, args=(socket_central, producer, id_taxi), daemon=True).start()
 
             # Iniciar hilo para escuchar al sensor
-            threading.Thread(target=handle_sensor, args=(socket_central, connection_sensor), daemon=True).start()
+            threading.Thread(target=handle_sensor, args=(socket_central, connection_sensor, producer, id_taxi), daemon=True).start()
 
             # Mantener el programa en ejecución para recibir mensajes
             while True:

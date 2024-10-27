@@ -4,13 +4,13 @@
 EC_CENTRAL="python3 EC_Central.py 8000 localhost 9092"
 
 # python3 EC_DE.py ip_central puerto_central ip_broker puerto_broker ip_s puerto_s id_taxi
-EC_DE="python3 EC_DE.py 192.168.0.30 8000 localhost 9092 localhost 8500 1"
+EC_DE="python3 EC_DE.py 192.168.0.30 8000 localhost 9092 localhost 8050 1"
 
 # python3 EC_DE.py ip_de puerto_de
-EC_S="python3 EC_S.py"
+EC_S="python3 EC_S.py localhost 8050"
 
 # python3 EC_Customer.py ip_broker puerto_broker id_cliente
-EC_CUSTOMER="python3 EC_Customer.py"
+EC_CUSTOMER="python3 EC_Customer.py localhost 9092 1"
 
 # Ejecutar EC_Central
 echo "Ejecutando EC_Central..."

@@ -52,6 +52,7 @@ def main():
     for destination in destinations:
         position_customer = f"({coor_x}, {coor_y})"
         request_taxi(producer, topic_producer, id_client, destination.strip(), position_customer)
+        time.sleep(1)
         answer = get_answer(consumer)
 
         if answer == "OK":

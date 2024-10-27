@@ -6,6 +6,7 @@ import sys
 
 # Variable de control global para el envío de OK
 PAUSE_TAXI = threading.Event()          # Para pausar y reanudar el envío de OK
+PAUSE_TAXI.set()                        # Comienza en OK
 
 
 # Obtener los parámetros del taxi
@@ -50,7 +51,7 @@ def handle_ko(sock, ip_taxi, port_taxi):
 
             # Reanudar automáticamente después de 5 segundos
             sock.sendall(b'OK')  # Enviar "RESUME" al EC_DE para reanudar el taxi
-            print("Sensor enviando: RESUME. Reanudando taxi.")
+            print("Sensor enviando: OK. Reanudando taxi.")
             PAUSE_TAXI.set()  # Reanudar el envío de OK
 
 
