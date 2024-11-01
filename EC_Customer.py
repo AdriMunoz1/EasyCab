@@ -1,44 +1,67 @@
-import socket
 import sys
 import time
-from kafka import KafkaProducer
+from kafka import KafkaProducer, KafkaConsumer
+
 
 def get_parameters():
-    if len(sys.argv) <= 3:
-        print(f"Error: <IP Broker> <Port Broker>  <ID Cliente>")
+    if len(sys.argv) != 4:
+        print(f"Error: python3 EC_Customer.py <IP Broker> <Port Broker>  <ID Client>")
         sys.exit(1)
 
     ip_broker = sys.argv[1]
     port_broker = int(sys.argv[2])
-    id_cliente = sys.argv[3]
+    id_client = sys.argv[3]
 
-    return ip_broker, port_broker, id_cliente
+    return ip_broker, port_broker, id_client
 
 
-def request_taxi(central_socket, id_cliente):
-    ubicacion_recogida = input("Introduce la ubicación de recogida:")
-    destino = input("Introduce el destino:")
-    mensaje = f"REQUEST#{id_cliente}#{ubicacion_recogida}#{destino}"
-    central_socket.send(mensaje.encode('utf-8'))
-    respuesta = central_socket.recv(1024).decode('utf-8')
-    print(f"Respuesta de EC_Central: {respuesta}")
+def request_taxi(producer, topic, id_client, destination, position_customer):
+    message = f"{id_client}#{destination}#{position_customer}"
+    producer.send(topic, message.encode('utf-8'))
+    print(f"Enviando solicitud a EC_Central: {message}")
+
+
+def get_answer(consumer):
+    for message in consumer:
+        answer = message.value.decode('utf-8')
+        print(f"Respuesta de EC_Central: {answer}")
+        return answer
 
 
 def main():
-    ip_broker, port_broker, id_cliente = get_parameters()
+    ip_broker, port_broker, id_client = get_parameters()
+    coor_x = coor_y = 3
 
+    # Configurar productor de Kafka
+    topic_producer = 'solicitud_central'
     producer = KafkaProducer(bootstrap_servers=f'{ip_broker}:{port_broker}')
 
-    # Leer el archivo con los destinos
-    with open('destinos.txt', 'r') as file:
-        destinos = file.readlines()
+    # Configurar consumidor de Kafka para recibir respuestas
+    topic_consumer = 'respuesta_central'
+    consumer = KafkaConsumer(
+        topic_consumer,
+        bootstrap_servers=f'{ip_broker}:{port_broker}',
+        group_id=f'CUSTOMER#{id_client}',
+        auto_offset_reset='earliest'
+    )
 
-    for destino in destinos:
-        # Crear mensaje
-        mensaje = f"Cliente {id_cliente} solicita taxi al destino {destino.strip()}"
-        producer.send('central_topic', mensaje.encode('utf-8'))
-        print(f"Enviando: {mensaje}")
-        time.sleep(4)  # Esperar 4 segundos antes de enviar el próximo servicio
+    # Leer archivo con los destinos
+    with open('destinos.txt', 'r') as file:
+        destinations = file.readlines()
+
+    for destination in destinations:
+        position_customer = f"({coor_x}, {coor_y})"
+        request_taxi(producer, topic_producer, id_client, destination.strip(), position_customer)
+        time.sleep(1)
+        answer = get_answer(consumer)
+
+        if answer == "OK":
+            print("Servicio ACEPTADO. Esperando 4 segundos para la próxima solicitud...")
+        else:
+            print("Servicio DENEGADO. Esperando 4 segundos para la próxima solicitud...")
+
+        time.sleep(4)  # Esperar 4 segundos antes de la próxima solicitud
+
 
 ######################### MAIN #########################
 if __name__ == "__main__":
