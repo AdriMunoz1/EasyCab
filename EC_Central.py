@@ -69,7 +69,7 @@ def handle_auth_requests_sockets(ip, port):
     server_socket.bind((ip, port))
     server_socket.listen()
 
-    print(f"[Autenticación] Servidor de autenticación escuchando en {ip}:{port}")
+    print(f"\n[Autenticación] Servidor de autenticación escuchando en {ip}:{port}")
 
     while True:
         client_socket, address = server_socket.accept()
@@ -126,7 +126,7 @@ if __name__ == "__main__":
     command_thread.start()
 
     # Crear hilo para manejar las solicitudes de autenticación por sockets
-    auth_thread = threading.Thread(target=handle_auth_requests_sockets, args=('localhost', 8000), daemon=False)
+    auth_thread = threading.Thread(target=handle_auth_requests_sockets, args=('localhost', 7999), daemon=False)
     auth_thread.start()
 
     # Asegurarse de que el programa no termine

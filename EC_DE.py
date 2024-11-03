@@ -16,6 +16,8 @@ taxi_position = None
 destination_position = None
 taxi_id = None
 stop_event = threading.Event()
+last_ok_time = time.time()  # Tiempo del último OK recibido
+is_paused = False
 
 # Obtener los parámetros pasados por línea de comandos
 def get_parameters():
@@ -53,6 +55,20 @@ def validate_taxi_with_central(ip_central, port_central):
         print(f"[Error] Error al autenticar el taxi con EC_Central: {e}")
         return False
 
+# Enviar la posición actual a Kafka
+def send_position_to_kafka():
+    if is_paused:
+        return  # No enviar la posición si el taxi está detenido
+    position_topic = 'taxi_updates'
+    msg = {
+        'taxi_id': taxi_id,
+        'status': 'moving',
+        'position': taxi_position
+    }
+    producer.send(position_topic, msg)
+    producer.flush()
+    print(f"Posición enviada a Kafka: {msg}")
+
 # Notificar llegada al destino
 def notify_arrival():
     arrival_topic = 'taxi_updates'
@@ -64,18 +80,6 @@ def notify_arrival():
     producer.send(arrival_topic, msg)
     producer.flush()
     print(f"Taxi {taxi_id} ha llegado al destino {taxi_position}")
-
-# Enviar la posición actual a Kafka
-def send_position_to_kafka():
-    position_topic = 'taxi_updates'
-    msg = {
-        'taxi_id': taxi_id,
-        'status': 'moving',
-        'position': taxi_position
-    }
-    producer.send(position_topic, msg)
-    producer.flush()
-    print(f"Posición enviada a Kafka: {msg}")
 
 # Función para mover el taxi hacia el destino
 def move_taxi_to_destination():
@@ -89,13 +93,11 @@ def move_taxi_to_destination():
         print("Error: El destino no ha sido establecido. Posiciones no inicializadas correctamente.")
         return
 
-    stop_event.clear()  # Asegurarse de que el evento esté limpio antes de comenzar
-
     while taxi_position != destination_position:
         # Verificar si se ha recibido una señal de detener
         if stop_event.is_set():
             print(f"Taxi {taxi_id} detenido en {taxi_position}")
-            return
+            return  # Salir de la función para detener el movimiento
 
         # Actualizar posición en eje X
         if taxi_position[0] < destination_position[0]:
@@ -103,21 +105,11 @@ def move_taxi_to_destination():
         elif taxi_position[0] > destination_position[0]:
             taxi_position = (taxi_position[0] - 1, taxi_position[1])
 
-        # Verificar nuevamente si se debe detener
-        if stop_event.is_set():
-            print(f"Taxi {taxi_id} detenido en {taxi_position}")
-            return
-
         # Actualizar posición en eje Y
         if taxi_position[1] < destination_position[1]:
             taxi_position = (taxi_position[0], taxi_position[1] + 1)
         elif taxi_position[1] > destination_position[1]:
             taxi_position = (taxi_position[0], taxi_position[1] - 1)
-
-        # Verificar estado del taxi una vez más antes de continuar
-        if stop_event.is_set():
-            print(f"Taxi {taxi_id} detenido en {taxi_position}")
-            return
 
         # Simular el movimiento con un retardo
         time.sleep(1)
@@ -130,6 +122,64 @@ def move_taxi_to_destination():
     if taxi_position == destination_position:
         print(f"Taxi {taxi_id} ha llegado a su destino: {destination_position}")
         notify_arrival()
+
+# Manejar la comunicación con EC_S usando sockets
+def run_sensor_server(ip_s):
+    global last_ok_time, is_paused
+    port = 8000 + int(taxi_id)  # El puerto para cada taxi será 8000 + ID del taxi
+    try:
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.bind((ip_s, port))
+        server_socket.listen(1)
+        print(f"Servidor de sensores escuchando en {ip_s}:{port}")
+
+        while True:
+            client_socket, addr = server_socket.accept()
+            print(f"Conexión de EC_S aceptada desde {addr}")
+            try:
+                while True:
+                    data = client_socket.recv(1024).decode('utf-8')
+                    if not data:
+                        break
+                    if data == "OK":
+                        last_ok_time = time.time()  # Actualizar el tiempo del último OK recibido
+                        print(f"[Sensor] Recibido 'OK' de EC_S para el taxi {taxi_id}")
+                        stop_event.clear()  # Reanudar movimiento si se está recibiendo 'OK'
+                        is_paused = False
+                    elif data == "KO":
+                        print(f"[Sensor] Recibido 'KO' de EC_S para el taxi {taxi_id}")
+                        stop_event.set()  # Pausar el taxi
+                        is_paused = True
+                        send_stop_command()  # Enviar comando STOP a EC_Central
+                        time.sleep(5)  # Esperar 5 segundos
+                        send_resume_command()  # Enviar comando RESUME a EC_Central
+            except Exception as e:
+                print(f"[Error] Error en la comunicación con EC_S: {e}")
+            finally:
+                client_socket.close()
+                print(f"Conexión con EC_S cerrada.")
+    except Exception as e:
+        print(f"[Error] Error en el servidor de sensores: {e}")
+
+# Enviar comando STOP a EC_Central
+def send_stop_command():
+    msg = {
+        'taxi_id': taxi_id,
+        'command': 'STOP'
+    }
+    producer.send('taxi_commands', msg)
+    producer.flush()
+    print(f"Comando STOP enviado al taxi {taxi_id} a través de Kafka")
+
+# Enviar comando RESUME a EC_Central
+def send_resume_command():
+    msg = {
+        'taxi_id': taxi_id,
+        'command': 'RESUME'
+    }
+    producer.send('taxi_commands', msg)
+    producer.flush()
+    print(f"Comando RESUME enviado al taxi {taxi_id} a través de Kafka")
 
 # Manejo de comandos desde Kafka
 def receive_commands():
@@ -151,14 +201,13 @@ def receive_commands():
             if received_taxi_id == taxi_id:
                 if command == "STOP":
                     stop_event.set()
-                    with taxi_status_lock:
-                        print(f"Taxi {taxi_id} detenido por comando STOP")
+                    print(f"Taxi {taxi_id} detenido por comando STOP")
 
                 elif command == "RESUME":
-                    with taxi_status_lock:
-                        stop_event.clear()
-                        print(f"Taxi {taxi_id} reanudado por comando RESUME")
-                    threading.Thread(target=move_taxi_to_destination).start()
+                    stop_event.clear()
+                    print(f"Taxi {taxi_id} reanudado por comando RESUME")
+                    # Continuar movimiento si el taxi estaba detenido
+                    threading.Thread(target=move_taxi_to_destination, daemon=True).start()
 
                 elif command == "DESTINATION":
                     new_destination = message.value.get('extra_param')
@@ -166,21 +215,19 @@ def receive_commands():
                         # Asegurar que el destino sea una tupla válida
                         destination_position = eval(new_destination)
                         if isinstance(destination_position, tuple) and len(destination_position) == 2:
-                            with taxi_status_lock:
-                                stop_event.clear()
-                                print(f"Recibido nuevo destino para el taxi {taxi_id}: {destination_position}")
-                            threading.Thread(target=move_taxi_to_destination).start()
+                            stop_event.clear()
+                            print(f"Recibido nuevo destino para el taxi {taxi_id}: {destination_position}")
+                            threading.Thread(target=move_taxi_to_destination, daemon=True).start()
                         else:
                             print(f"Error: Formato de destino inválido recibido: {new_destination}")
                     except Exception as e:
                         print(f"Error al establecer el destino: {e}")
 
                 elif command == "RETURN":
-                    with taxi_status_lock:
-                        stop_event.clear()
-                        destination_position = (1, 1)
-                        print(f"Recibido comando para volver a la base para el taxi {taxi_id}")
-                    threading.Thread(target=move_taxi_to_destination).start()
+                    stop_event.clear()
+                    destination_position = (1, 1)
+                    print(f"Recibido comando para volver a la base para el taxi {taxi_id}")
+                    threading.Thread(target=move_taxi_to_destination, daemon=True).start()
     except Exception as e:
         print(f"Error al recibir comandos de Kafka: {e}")
 
@@ -208,8 +255,12 @@ def main():
     if not validate_taxi_with_central(ip_central, port_central):
         sys.exit(1)
 
+    # Iniciar un hilo para manejar la conexión con EC_S
+    sensor_thread = threading.Thread(target=run_sensor_server, args=(ip_s,), daemon=True)
+    sensor_thread.start()
+
     # Iniciar un hilo para recibir comandos de Kafka
-    command_thread = threading.Thread(target=receive_commands)
+    command_thread = threading.Thread(target=receive_commands, daemon=True)
     command_thread.start()
 
     # Mantener el programa corriendo
