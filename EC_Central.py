@@ -5,6 +5,8 @@ import json
 import time
 from kafka import KafkaProducer, KafkaConsumer
 from tkinter import Tk, Canvas
+import sys
+import signal
 
 # Configuración de Kafka
 KAFKA_SERVER = 'localhost:9092'
@@ -69,7 +71,7 @@ class CityMap:
                 (y - 1) * self.cell_size + self.cell_size // 2
             )
             self.canvas.itemconfig(rect_id, fill=color)
-
+"""
 # Cargar el mapa de la ciudad
 def load_city_map(city_map):
     try:
@@ -81,41 +83,77 @@ def load_city_map(city_map):
         print("Mapa de la ciudad cargado correctamente.")
     except Exception as e:
         print(f"Error al cargar el mapa de la ciudad: {e}")
-
-# Actualizar el estado del taxi en la base de datos
-def update_taxi_status(status, id_taxi):
+"""
+# Cargar el mapa de la ciudad
+def load_city_map(city_map):
     try:
-        connection = sqlite3.connect('taxis.db')
-        cursor = connection.cursor()
-        cursor.execute('''
-        UPDATE taxis SET estado = ? WHERE id = ?
-        ''', (status, id_taxi))
-        connection.commit()
-        connection.close()
-        print(f"[Base de Datos] Taxi {id_taxi} actualizado a estado '{status}'.")
-    except sqlite3.Error as e:
-        print(f"[Error BD] Error al actualizar el estado del taxi {id_taxi}: {e}")
+        with open('city_map.txt', 'r') as file:
+            for line in file:
+                parts = line.strip().split()
+                if len(parts) == 3:
+                    id_localizacion = parts[0]
+                    coord_x = int(parts[1])
+                    coord_y = int(parts[2])
+                    city_map.add_location(coord_x, coord_y, id_localizacion)
+        print("Mapa de la ciudad cargado correctamente.")
+    except Exception as e:
+        print(f"Error al cargar el mapa de la ciudad: {e}")
+# Manejar la desconexión del taxi
+def handle_exit_signal(signal_received, frame):
+    print(f"\n[Desconexión] Cerrando EC_Central...")
+    sys.exit(0)
 
-# Función para autenticar el taxi en la BD
-def authenticate_taxi(id_taxi):
+# Función para enviar comandos al taxi a través de Kafka
+def send_command(taxi_id, command, extra_param=None):
+    msg = {
+        'taxi_id': taxi_id,
+        'command': command,
+        'extra_param': extra_param
+    }
+    producer.send('taxi_commands', msg)
+    producer.flush()  # Asegurarse de que el mensaje sea enviado inmediatamente
+    print(f"Comando {command} enviado al taxi {taxi_id}")
+
+# Hilo para manejar los comandos del usuario
+def command_input_handler():
+    while True:
+        try:
+            command = input("Introduce un comando (STOP/RESUME/DESTINATION/RETURN) para el taxi: ")
+            taxi_id = input("Introduce el ID del taxi: ")
+
+            if command in ["STOP", "RESUME"]:
+                send_command(taxi_id, command)
+            elif command == "DESTINATION":
+                new_destination = input("Introduce la nueva localización (en formato (x, y)): ")
+                send_command(taxi_id, "DESTINATION", new_destination)
+            elif command == "RETURN":
+                send_command(taxi_id, "RETURN")
+            else:
+                print("Comando no válido. Usa STOP, RESUME, DESTINATION o RETURN.")
+        except Exception as e:
+            print(f"Error al introducir comandos: {e}")
+
+# Función para manejar actualizaciones del taxi a través de Kafka
+def handle_taxi_updates(city_map):
+    consumer = KafkaConsumer(
+        'taxi_updates',
+        bootstrap_servers=KAFKA_SERVER,
+        value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+        auto_offset_reset='latest'
+    )
+
     try:
-        connection = sqlite3.connect('taxis.db')
-        cursor = connection.cursor()
-        cursor.execute('SELECT * FROM taxis WHERE id = ?', (id_taxi,))
-        taxi = cursor.fetchone()
-        connection.close()
+        for message in consumer:
+            taxi_id = message.value.get('taxi_id')
+            status = message.value.get('status')
+            position = message.value.get('position')
 
-        if taxi:
-            print(f"\n[Autenticación] Taxi {id_taxi} autenticado correctamente.")
-            # Actualizar el estado del taxi a 'OK' en la base de datos
-            update_taxi_status("OK", int(id_taxi))
-            return "OK"
-        else:
-            print(f"[Autenticación] Taxi {id_taxi} no está registrado.")
-            return "DENIED"
-    except sqlite3.Error as e:
-        print(f"[Error BD] Error al autenticar el taxi {id_taxi}: {e}")
-        return "ERROR"
+            if status == 'moving':
+                city_map.move_taxi(taxi_id, position[0], position[1], 'green')
+            elif status == 'stopped':
+                city_map.move_taxi(taxi_id, position[0], position[1], 'red')
+    except Exception as e:
+        print(f"Error al manejar actualizaciones del taxi: {e}")
 
 # Hilo para manejar solicitudes de autenticación de taxis por sockets
 def handle_auth_requests_sockets(ip, port, city_map):
@@ -144,61 +182,29 @@ def handle_auth_requests_sockets(ip, port, city_map):
         finally:
             client_socket.close()
 
-# Hilo para manejar los comandos del usuario
-def command_input_handler():
-    while True:
-        try:
-            command = input("Introduce un comando (STOP/RESUME/DESTINATION/RETURN) para el taxi: ")
-            taxi_id = input("Introduce el ID del taxi: ")
-
-            if command in ["STOP", "RESUME"]:
-                send_command(taxi_id, command)
-            elif command == "DESTINATION":
-                new_destination = input("Introduce la nueva localización (ID_LOCALIZACION): ")
-                send_command(taxi_id, "DESTINATION", new_destination)
-            elif command == "RETURN":
-                send_command(taxi_id, "RETURN")
-            else:
-                print("Comando no válido. Usa STOP, RESUME, DESTINATION o RETURN.")
-        except Exception as e:
-            print(f"Error al introducir comandos: {e}")
-
-# Función para enviar comandos al taxi a través de Kafka
-def send_command(taxi_id, command, extra_param=None):
-    msg = {
-        'taxi_id': taxi_id,
-        'command': command,
-        'extra_param': extra_param
-    }
-    producer.send('taxi_commands', msg)
-    producer.flush()  # Asegurarse de que el mensaje sea enviado inmediatamente
-    print(f"Comando {command} enviado al taxi {taxi_id}")
-
-# Función para manejar actualizaciones del taxi a través de Kafka
-def handle_taxi_updates(city_map):
-    consumer = KafkaConsumer(
-        'taxi_updates',
-        bootstrap_servers=KAFKA_SERVER,
-        value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-        auto_offset_reset='earliest'
-    )
-
+# Función para autenticar el taxi en la BD
+def authenticate_taxi(id_taxi):
     try:
-        for message in consumer:
-            taxi_id = message.value.get('taxi_id')
-            status = message.value.get('status')
-            position = message.value.get('position')
+        connection = sqlite3.connect('taxis.db')
+        cursor = connection.cursor()
+        cursor.execute('SELECT * FROM taxis WHERE id = ?', (id_taxi,))
+        taxi = cursor.fetchone()
+        connection.close()
 
-            if status == 'moving':
-                city_map.move_taxi(taxi_id, position[0], position[1], 'green')
-            elif status == 'stopped':
-                city_map.move_taxi(taxi_id, position[0], position[1], 'red')
-                update_taxi_status('stopped', taxi_id)  # Actualizar el estado a 'stopped'
-    except Exception as e:
-        print(f"Error al manejar actualizaciones del taxi: {e}")
+        if taxi:
+            print(f"\n[Autenticación] Taxi {id_taxi} autenticado correctamente.")
+            return "OK"
+        else:
+            print(f"[Autenticación] Taxi {id_taxi} no está registrado.")
+            return "DENIED"
+    except sqlite3.Error as e:
+        print(f"[Error BD] Error al autenticar el taxi {id_taxi}: {e}")
+        return "ERROR"
 
 # Ejecutar el servidor EC_Central
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, handle_exit_signal)  # Capturar la señal Ctrl+C para manejar la desconexión
+
     root = Tk()
     root.title("Mapa de la Ciudad - EasyCab")
     city_map = CityMap(root, size)
