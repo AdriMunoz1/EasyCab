@@ -1,68 +1,101 @@
-import sys
+import ast
 import time
+import sys
+import json
 from kafka import KafkaProducer, KafkaConsumer
+from kafka.errors import KafkaError
+
+class Customer:
+    def __init__(self, ip_broker, port_broker, id_client, initial_position, file_destinations):
+        self.id_client = id_client
+        self.initial_position = initial_position
+        self.file_destinations = file_destinations
+        self.producer = KafkaProducer(
+            bootstrap_servers=f"{ip_broker}:{port_broker}",
+            value_serializer=lambda x: json.dumps(x).encode('utf-8')
+        )
+        self.consumer = KafkaConsumer(
+            f"customer_{self.id_client}_response",
+            bootstrap_servers=f"{ip_broker}:{port_broker}",
+            auto_offset_reset='earliest',
+            enable_auto_commit=True,
+            group_id=f"customer_{self.id_client}_group",
+            value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+        )
+
+    def read_services(self):
+        """Leer los servicios solicitados desde un archivo en formato (x, y)."""
+        services = []
+        with open(self.file_destinations, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        destination = ast.literal_eval(line)
+                        services.append(destination)
+                    except (ValueError, SyntaxError):
+                        print("Error al leer el destino en formato (x, y).")
+        return services
+
+    def send_request(self, destination):
+        """Enviar solicitud de servicio al servidor central en formato JSON."""
+        message = {
+            "type": "DESTINATION",
+            "client_id": self.id_client,
+            "destination": destination,
+            "initial_position": self.initial_position
+        }
+
+        future = self.producer.send("central_requests", message)
+
+        try:
+            future.get(timeout=10)
+            print(f"Solicitud enviada para el destino: {destination}")
+        except KafkaError as e:
+            print(f"Error enviando la solicitud: {e}")
+
+    def listen_for_response(self):
+        """Esperar respuesta de EC_Central."""
+        for message in self.consumer:
+            response = message.value  # Ya estÃ¡ deserializado como diccionario
+            print(f"Respuesta recibida de EC_Central: {response}")
+
+            if response['status'] == 'OK':
+                print(f"Servicio aceptado por EC_Central. Taxi asignado: {response['assigned_taxi']}")
+                return True
+            elif response['status'] == 'KO':
+                print("Servicio denegado por EC_Central.")
+                return False
+
+    def run(self):
+        """Ejecuta la secuencia de solicitudes de servicio."""
+        destinations = self.read_services()
+
+        for destination in destinations:
+            self.send_request(destination)
+            success = self.listen_for_response()
+
+            if success:
+                print(f"Servicio a {destination} completado.")
+            else:
+                print(f"No se pudo completar el servicio a {destination}.")
+
+            time.sleep(4)
+
+        print("Todas las solicitudes de servicio se han completado.")
 
 
-def get_parameters():
-    if len(sys.argv) != 4:
-        print(f"Error: python3 EC_Customer.py <IP Broker> <Port Broker>  <ID Client>")
+if __name__ == "__main__":
+    if len(sys.argv) != 5:
+        print("Error: python3 EC_Customer.py <IP Broker> <Port Broker> <ID Client> <File>")
         sys.exit(1)
 
     ip_broker = sys.argv[1]
     port_broker = int(sys.argv[2])
     id_client = sys.argv[3]
+    file_destination = sys.argv[4]
+    initial_position = (5, 5)
 
-    return ip_broker, port_broker, id_client
+    customer = Customer(ip_broker, port_broker, id_client, initial_position, file_destination)
+    customer.run()
 
-
-def request_taxi(producer, topic, id_client, destination, position_customer):
-    message = f"{id_client}#{destination}#{position_customer}"
-    producer.send(topic, message.encode('utf-8'))
-    print(f"Enviando solicitud a EC_Central: {message}")
-
-
-def get_answer(consumer):
-    for message in consumer:
-        answer = message.value.decode('utf-8')
-        print(f"Respuesta de EC_Central: {answer}")
-        return answer
-
-
-def main():
-    ip_broker, port_broker, id_client = get_parameters()
-    coor_x = coor_y = 3
-
-    # Configurar productor de Kafka
-    topic_producer = 'solicitud_central'
-    producer = KafkaProducer(bootstrap_servers=f'{ip_broker}:{port_broker}')
-
-    # Configurar consumidor de Kafka para recibir respuestas
-    topic_consumer = 'respuesta_central'
-    consumer = KafkaConsumer(
-        topic_consumer,
-        bootstrap_servers=f'{ip_broker}:{port_broker}',
-        group_id=f'CUSTOMER#{id_client}',
-        auto_offset_reset='earliest'
-    )
-
-    # Leer archivo con los destinos
-    with open('destinos.txt', 'r') as file:
-        destinations = file.readlines()
-
-    for destination in destinations:
-        position_customer = f"({coor_x}, {coor_y})"
-        request_taxi(producer, topic_producer, id_client, destination.strip(), position_customer)
-        time.sleep(1)
-        answer = get_answer(consumer)
-
-        if answer == "OK":
-            print("Servicio ACEPTADO. Esperando 4 segundos para la próxima solicitud...")
-        else:
-            print("Servicio DENEGADO. Esperando 4 segundos para la próxima solicitud...")
-
-        time.sleep(4)  # Esperar 4 segundos antes de la próxima solicitud
-
-
-######################### MAIN #########################
-if __name__ == "__main__":
-    main()
