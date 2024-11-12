@@ -2,7 +2,7 @@ import socket
 import sqlite3
 import threading
 import json
-#import time
+import time
 from kafka import KafkaProducer, KafkaConsumer
 from tkinter import Tk, Canvas
 import sys
@@ -229,24 +229,52 @@ def handle_customer_requests():
         auto_offset_reset='latest'
     )
 
+    confirmation_consumer = KafkaConsumer(
+        'taxi_updates',
+        bootstrap_servers=KAFKA_SERVER,
+        value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+        auto_offset_reset='latest'
+    )
+
     for message in consumer:
         customer_request = message.value
+        position_customer = customer_request.get('position')
         destination = customer_request.get('destination')
         customer_id = customer_request.get('customer_id')
 
         if TAXIS_DISPONIBLES:
             taxi_id = TAXIS_DISPONIBLES.pop(0)
+
+            # Enviar respuesta al cliente
+            response = {'customer_id': customer_id, 'status': 'OK'}
+            producer_to_customer.send('central_to_customer', response)
+            producer_to_customer.flush()
+
+            print(f"Servicio aceptado. Taxi {taxi_id} asignado a destino {position_customer}.")
+
+            send_command(taxi_id, 'DESTINATION', position_customer)
+
+            # Esperar confirmación de llegada del taxi
+            taxi_arrived = False
+            while not taxi_arrived:
+                confirm_msg = next(confirmation_consumer)
+                confirmation = confirm_msg.value
+                if (confirmation.get('taxi_id') == taxi_id and
+                        confirmation.get('status') == 'arrived' and
+                        confirmation.get('position') == position_customer):
+                    print(f"Taxi {taxi_id} ha llegado a la posición del cliente.")
+                    taxi_arrived = True
+
+            print(f"Servicio aceptado. Taxi {taxi_id} asignado a destino {destination}.")
+
             # Asignar el destino al taxi disponible
             send_command(taxi_id, 'DESTINATION', destination)
-            response = {'customer_id': customer_id, 'status': 'OK'}
-            print(f"Servicio aceptado. Taxi {taxi_id} asignado a destino {destination}.")
         else:
-            response = {'customer_id': customer_id, 'status': 'KO'}
             print("Servicio rechazado. No hay taxis disponibles.")
-
-        # Enviar respuesta al cliente
-        producer_to_customer.send('central_to_customer', response)
-        producer_to_customer.flush()
+            # Enviar respuesta al cliente
+            response = {'customer_id': customer_id, 'status': 'KO'}
+            producer_to_customer.send('central_to_customer', response)
+            producer_to_customer.flush()
 
 # Ejecutar el servidor EC_Central
 if __name__ == "__main__":
