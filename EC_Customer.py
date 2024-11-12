@@ -38,13 +38,12 @@ def main():
     coor_x = coor_y = 3
 
     # Configurar productor de Kafka
-    topic_producer = 'customer_requests'
+    topic_producer = 'customer_to_central'
     producer = KafkaProducer(bootstrap_servers=f'{ip_broker}:{port_broker}', value_serializer=lambda v: json.dumps(v).encode('utf-8'))
 
     # Configurar consumidor de Kafka para recibir respuestas
-    topic_consumer = 'customer_responses'
     consumer = KafkaConsumer(
-        topic_consumer,
+        'central_to_customer',
         bootstrap_servers=f'{ip_broker}:{port_broker}',
         group_id=f'CUSTOMER#{id_client}',
         auto_offset_reset='latest',

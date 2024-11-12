@@ -2,15 +2,18 @@ import socket
 import sqlite3
 import threading
 import json
-import time
+#import time
 from kafka import KafkaProducer, KafkaConsumer
 from tkinter import Tk, Canvas
 import sys
 import signal
 
+#from EC_DE import KAFKA_SERVER
+
 # Configuración de Kafka
-KAFKA_SERVER = 'localhost:9092'
-producer = KafkaProducer(bootstrap_servers=KAFKA_SERVER, value_serializer=lambda v: json.dumps(v).encode('utf-8'))
+KAFKA_SERVER = '172.27.158.249:9092'
+producer_to_taxi = KafkaProducer(bootstrap_servers=KAFKA_SERVER, value_serializer=lambda v: json.dumps(v).encode('utf-8'))
+producer_to_customer = KafkaProducer(bootstrap_servers=KAFKA_SERVER, value_serializer=lambda v: json.dumps(v).encode('utf-8'))
 
 # Tamaño del mapa de la ciudad
 size = 20
@@ -118,8 +121,8 @@ def send_command(taxi_id, command, extra_param=None):
         'command': command,
         'extra_param': extra_param
     }
-    producer.send('taxi_commands', msg)
-    producer.flush()  # Asegurarse de que el mensaje sea enviado inmediatamente
+    producer_to_taxi.send('taxi_commands', msg)
+    producer_to_taxi.flush()  # Asegurarse de que el mensaje sea enviado inmediatamente
     print(f"Comando {command} enviado al taxi {taxi_id}")
 
 
@@ -220,11 +223,12 @@ def handle_customer_requests():
     global TAXIS_DISPONIBLES
 
     consumer = KafkaConsumer(
-        'customer_requests',
+        'customer_to_central',
         bootstrap_servers=KAFKA_SERVER,
         value_deserializer=lambda m: json.loads(m.decode('utf-8')),
         auto_offset_reset='latest'
     )
+
     for message in consumer:
         customer_request = message.value
         destination = customer_request.get('destination')
@@ -241,8 +245,8 @@ def handle_customer_requests():
             print("Servicio rechazado. No hay taxis disponibles.")
 
         # Enviar respuesta al cliente
-        producer.send('customer_responses', response)
-        producer.flush()
+        producer_to_customer.send('central_to_customer', response)
+        producer_to_customer.flush()
 
 # Ejecutar el servidor EC_Central
 if __name__ == "__main__":

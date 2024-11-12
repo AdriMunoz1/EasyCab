@@ -7,7 +7,7 @@ import json
 import signal
 
 # Configuración de Kafka
-KAFKA_SERVER = 'localhost:9092'
+KAFKA_SERVER = '172.20.10.4:9092'
 producer = KafkaProducer(bootstrap_servers=KAFKA_SERVER, value_serializer=lambda v: json.dumps(v).encode('utf-8'))
 
 # Variables globales para manejar el estado del taxi
@@ -199,7 +199,7 @@ def move_taxi_to_destination():
 
 # Manejar la comunicación con EC_S usando sockets
 def run_sensor_server(ip_s):
-    global last_ok_time, is_paused
+    global last_ok_time, is_paused, taxi_id
     port = 8000 + int(taxi_id)  # El puerto para cada taxi será 8000 + ID del taxi
     try:
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
