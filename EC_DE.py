@@ -7,7 +7,7 @@ import json
 import signal
 
 # Configuración de Kafka
-KAFKA_SERVER = 'localhost:9092'
+KAFKA_SERVER = '172.20.10.4:9092'
 producer = KafkaProducer(bootstrap_servers=KAFKA_SERVER, value_serializer=lambda v: json.dumps(v).encode('utf-8'))
 
 # Variables globales para manejar el estado del taxi
@@ -82,19 +82,6 @@ def notify_arrival():
     producer.send(arrival_topic, msg)
     producer.flush()
     print(f"Taxi {taxi_id} ha llegado al destino {taxi_position}")
-
-    # Regresar el taxi al pool de disponibles
-    return_taxi_to_available_pool()
-
-def return_taxi_to_available_pool():
-    update_topic = 'taxi_updates'
-    msg = {
-        'taxi_id': taxi_id,
-        'status': 'available'
-    }
-    producer.send(update_topic, msg)
-    producer.flush()
-    print(f"Taxi {taxi_id} está ahora disponible")
 """
 # Función para mover el taxi hacia el destino
 def move_taxi_to_destination():
@@ -139,8 +126,7 @@ def move_taxi_to_destination():
         notify_arrival()
 """
 
-"""
-LA DE ANTES
+
 # Función para mover el taxi hacia el destino
 def move_taxi_to_destination():
     global taxi_position, destination_position
@@ -190,75 +176,6 @@ def move_taxi_to_destination():
             producer.send(update_topic, msg)
             producer.flush()
             print(f"Estado 'stopped' enviado a Kafka para taxi {taxi_id}")
-            return  # Salir de la función para detener el movimiento
-
-        # Actualizar posición en eje Y
-        if taxi_position[1] < destination_position[1]:
-            taxi_position = (taxi_position[0], taxi_position[1] + 1)
-        elif taxi_position[1] > destination_position[1]:
-            taxi_position = (taxi_position[0], taxi_position[1] - 1)
-
-        # Simular el movimiento con un retardo
-        time.sleep(1)
-
-        # Enviar la nueva posición a Kafka
-        send_position_to_kafka()
-        print(f"Taxi {taxi_id} moviéndose a {taxi_position}")
-
-    # Si el taxi no fue detenido, ha llegado al destino
-    if taxi_position == destination_position:
-        print(f"Taxi {taxi_id} ha llegado a su destino: {destination_position}")
-        notify_arrival()
-"""
-# Función para mover el taxi hacia el destino
-def move_taxi_to_destination():
-    global taxi_position, destination_position
-
-    if taxi_position is None:
-        # Inicializar la posición del taxi si aún no se ha hecho
-        taxi_position = (1, 1)
-
-    if destination_position is None:
-        print("Error: El destino no ha sido establecido. Posiciones no inicializadas correctamente.")
-        return
-
-    while taxi_position != destination_position:
-        # Verificar si se ha recibido una señal de detener ANTES de cualquier movimiento
-        if stop_event.is_set():
-            print(f"Taxi {taxi_id} detenido en {taxi_position}")
-
-            # Enviar actualización del estado a Kafka para indicar que está detenido
-            update_topic = 'taxi_updates'
-            msg = {
-                'taxi_id': taxi_id,
-                'status': 'KO',
-                'position': taxi_position  # Enviar la posición actual
-            }
-            producer.send(update_topic, msg)
-            producer.flush()
-            print(f"Estado 'KO' enviado a Kafka para taxi {taxi_id}")
-            return  # Salir de la función para detener el movimiento
-
-        # Actualizar posición en eje X
-        if taxi_position[0] < destination_position[0]:
-            taxi_position = (taxi_position[0] + 1, taxi_position[1])
-        elif taxi_position[0] > destination_position[0]:
-            taxi_position = (taxi_position[0] - 1, taxi_position[1])
-
-        # Verificar nuevamente si hay una señal de detener
-        if stop_event.is_set():
-            print(f"Taxi {taxi_id} detenido en {taxi_position}")
-
-            # Enviar actualización del estado a Kafka para indicar que está detenido
-            update_topic = 'taxi_updates'
-            msg = {
-                'taxi_id': taxi_id,
-                'status': 'KO',
-                'position': taxi_position  # Enviar la posición actual
-            }
-            producer.send(update_topic, msg)
-            producer.flush()
-            print(f"Estado 'KO' enviado a Kafka para taxi {taxi_id}")
             return  # Salir de la función para detener el movimiento
 
         # Actualizar posición en eje Y
@@ -390,8 +307,7 @@ def receive_commands():
     except Exception as e:
         print(f"Error al recibir comandos de Kafka: {e}")
 """
-"""
-ESTA ES LA DE ANTES
+
 # Manejo de comandos desde Kafka
 def receive_commands():
     global destination_position
@@ -452,68 +368,6 @@ def receive_commands():
                     threading.Thread(target=move_taxi_to_destination, daemon=True).start()
     except Exception as e:
         print(f"Error al recibir comandos de Kafka: {e}")
-"""
-# Manejo de comandos desde Kafka
-def receive_commands():
-    global destination_position
-
-    command_topic = 'taxi_commands'
-    consumer = KafkaConsumer(
-        command_topic,
-        bootstrap_servers=KAFKA_SERVER,
-        value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-        group_id=f'taxi_{taxi_id}_commands',
-        auto_offset_reset='earliest'
-    )
-
-    try:
-        for message in consumer:
-            command = message.value.get('command')
-            received_taxi_id = message.value.get('taxi_id')
-            if received_taxi_id == taxi_id:
-                if command == "STOP":
-                    stop_event.set()
-                    print(f"Taxi {taxi_id} detenido por comando STOP")
-
-                    # Enviar actualización del estado a Kafka para indicar que está detenido
-                    update_topic = 'taxi_updates'
-                    msg = {
-                        'taxi_id': taxi_id,
-                        'status': 'stopped',
-                        'position': taxi_position  # Enviar la posición actual
-                    }
-                    producer.send(update_topic, msg)
-                    producer.flush()
-                    print(f"Estado 'stopped' enviado a Kafka para taxi {taxi_id}")
-
-                elif command == "RESUME":
-                    stop_event.clear()
-                    print(f"Taxi {taxi_id} reanudado por comando RESUME")
-                    # Continuar movimiento si el taxi estaba detenido
-                    threading.Thread(target=move_taxi_to_destination, daemon=True).start()
-
-                elif command == "DESTINATION":
-                    new_destination = message.value.get('extra_param')
-                    try:
-                        # Asegurar que el destino sea una tupla válida
-                        destination_position = eval(new_destination)
-                        if isinstance(destination_position, tuple) and len(destination_position) == 2:
-                            stop_event.clear()
-                            print(f"Recibido nuevo destino para el taxi {taxi_id}: {destination_position}")
-                            threading.Thread(target=move_taxi_to_destination, daemon=True).start()
-                        else:
-                            print(f"Error: Formato de destino inválido recibido: {new_destination}")
-                    except Exception as e:
-                        print(f"Error al establecer el destino: {e}")
-
-                elif command == "RETURN":
-                    stop_event.clear()
-                    destination_position = (1, 1)
-                    print(f"Recibido comando para volver a la base para el taxi {taxi_id}")
-                    threading.Thread(target=move_taxi_to_destination, daemon=True).start()
-    except Exception as e:
-        print(f"Error al recibir comandos de Kafka: {e}")
-
 
 
 # Manejo de la desconexión del taxi
