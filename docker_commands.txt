@@ -1,0 +1,11 @@
+Para levantar:
+    docker-compose up -d
+
+Para parar:
+    docker-compose down
+
+Para ver estado:
+    docker-compose ps
+
+Para ver logs:
+    docker-compose logs -f

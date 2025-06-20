@@ -3,17 +3,27 @@ import sqlite3
 import threading
 import json
 import time
-from kafka import KafkaProducer, KafkaConsumer
+from confluent_kafka import Producer, Consumer
 from tkinter import Tk, Canvas
 import sys
 import signal
+
+from kafka import KafkaProducer, KafkaConsumer
 
 #from EC_DE import KAFKA_SERVER
 
 # Configuración de Kafka
 KAFKA_SERVER = 'localhost:9092'
+
 producer_to_taxi = KafkaProducer(bootstrap_servers=KAFKA_SERVER, value_serializer=lambda v: json.dumps(v).encode('utf-8'))
 producer_to_customer = KafkaProducer(bootstrap_servers=KAFKA_SERVER, value_serializer=lambda v: json.dumps(v).encode('utf-8'))
+
+
+#producer = KafkaProducer(bootstrap_servers=KAFKA_SERVER, value_serializer=lambda v: json.dumps(v).encode('utf-8'))
+
+producer_conf = {'bootstrap.servers': KAFKA_SERVER}
+producer = Producer(producer_conf)
+
 
 # Tamaño del mapa de la ciudad
 size = 20
@@ -77,6 +87,16 @@ class CityMap:
                 (y - 1) * self.cell_size + self.cell_size // 2
             )
             self.canvas.itemconfig(rect_id, fill=color)
+
+    def get_location_coords(self, label):
+        if label in self.locations:
+            rect_id, _ = self.locations[label]
+            x0, y0, x1, y1 = self.canvas.coords(rect_id)
+            x = x1 // self.cell_size
+            y = y1 // self.cell_size
+            return f"{int(x)},{int(y)}"
+        return "0,0"
+    
 """
 # Cargar el mapa de la ciudad
 def load_city_map(city_map):
@@ -121,8 +141,16 @@ def send_command(taxi_id, command, extra_param=None):
         'command': command,
         'extra_param': extra_param
     }
-    producer_to_taxi.send('taxi_commands', msg)
-    producer_to_taxi.flush()  # Asegurarse de que el mensaje sea enviado inmediatamente
+
+#    producer_to_taxi.send('taxi_commands', msg)
+#    producer_to_taxi.flush()  # Asegurarse de que el mensaje sea enviado inmediatamente
+
+    producer.produce(
+        topic='taxi_commands',
+        value=json.dumps(msg).encode('utf-8')
+    )
+    producer.flush()  # Asegurarse de que el mensaje sea enviado inmediatamente
+
     print(f"Comando {command} enviado al taxi {taxi_id}")
 
 
@@ -150,6 +178,7 @@ TAXIS_EN_MAPA = {} # taxi_id -> (position, status)
 """
 # Función para manejar actualizaciones del taxi a través de Kafka
 def handle_taxi_updates(city_map):
+<<<<<<< HEAD
     consumer = KafkaConsumer(
         'taxi_updates',
         bootstrap_servers=KAFKA_SERVER,
@@ -159,11 +188,29 @@ def handle_taxi_updates(city_map):
         enable_auto_commit=True
     )
     processed_ids = set()
+=======
+    consumer_conf = {
+        'bootstrap.servers': KAFKA_SERVER,
+        'group.id': 'central_taxi_updates_group',
+        'auto.offset.reset': 'earliest'
+    }
+    consumer = Consumer(consumer_conf)
+    consumer.subscribe(['taxi_updates'])
+
+>>>>>>> 832e2808a5e55548f706233f2d43f315b076a6e6
     try:
-        for message in consumer:
-            taxi_id = message.value.get('taxi_id')
-            status = message.value.get('status')
-            position = message.value.get('position')
+        while True:
+            msg = consumer.poll(1.0)
+            if msg is None:
+                continue
+            if msg.error():
+                print(f"[Central] Error consumidor taxi_updates: {msg.error()}")
+                continue
+
+            update = json.loads(msg.value().decode('utf-8'))
+            taxi_id = update.get('taxi_id')
+            status = update.get('status')
+            position = update.get('position')
 
             # Guardar última posición de cada taxi
             TAXIS_EN_MAPA[taxi_id] = (position, status)
@@ -180,9 +227,13 @@ def handle_taxi_updates(city_map):
         print(f"Error al manejar actualizaciones del taxi: {e}")
 """
 from time import time, sleep
-
+#################################
+########### GOD #################
+#################################
 
 def handle_taxi_updates(city_map):
+
+    
     consumer = KafkaConsumer(
         'taxi_updates',
         bootstrap_servers=KAFKA_SERVER,
@@ -190,6 +241,7 @@ def handle_taxi_updates(city_map):
         auto_offset_reset='earliest',
         group_id=None  # Leemos todo el histórico
     )
+    
 
     TAXIS_EN_MAPA.clear()
     actividad_reciente = {}  # taxi_id -> timestamp del último mensaje
@@ -290,12 +342,91 @@ def authenticate_taxi(id_taxi):
     except sqlite3.Error as e:
         print(f"[Error BD] Error al autenticar el taxi {id_taxi}: {e}")
         return "ERROR"
+    
+
+def handle_customer_requests():
+    consumer_conf = {
+        'bootstrap.servers': KAFKA_SERVER,
+        'group.id': 'central_service_requests_group',
+        'auto.offset.reset': 'earliest'
+    }
+    consumer = Consumer(consumer_conf)
+    consumer.subscribe(['service_requests'])
+
+    print("[Central] Esperando solicitudes de clientes...")
+
+    while True:
+        msg = consumer.poll(1.0)
+        if msg is None:
+            continue
+        if msg.error():
+            print(f"[Central] Error consumidor solicitudes: {msg.error()}")
+            continue
+
+        request = json.loads(msg.value().decode('utf-8'))
+        request_id = request.get("RequestId")
+        client_id = request.get("ClientId")
+        position = request.get("Position")
+        destination = request.get("Destination")
+
+        print(f"[Central] Recibida solicitud de servicio: RequestId={request_id}, Cliente={client_id}, Posición={position}, Destino={destination}")
+
+        time.sleep(1)
+
+        # ================================
+        # Decidir si aceptar o denegar:
+        # Por ahora, aceptar siempre.
+        accept_request = True
+
+        if accept_request:
+            # Responder 'accepted'
+            response_accepted = {
+                "RequestId": request_id,
+                "ClientId": client_id,
+                "Status": "accepted"
+            }
+            producer.produce(
+                topic='service_responses',
+                value=json.dumps(response_accepted).encode('utf-8')
+            )            
+            producer.flush()
+            print(f"[Central] Respondido ACCEPTED para RequestId={request_id}")
+
+            dest_coord = city_map.get_location_coords(destination)
+            print(f"[DEBUG] get_location_coords({destination}) => {dest_coord} ({type(dest_coord)})")
+
+            # Simular trayecto terminado INSTANTÁNEAMENTE
+            response_completed = {
+                "RequestId": request_id,
+                "ClientId": client_id,
+                "Status": "completed",
+                "NewPosition": str(dest_coord)
+            }
+            producer.produce(
+                topic='service_responses',
+                value=json.dumps(response_completed).encode('utf-8')
+            )
+            producer.flush()
+            print(f"[Central] Respondido COMPLETED para RequestId={request_id} con NewPosition={dest_coord}")
+
+        else:
+            # Responder 'denied'
+            response_denied = {
+                "RequestId": request_id,
+                "ClientId": client_id,
+                "Status": "denied"
+            }
+            producer.send('service_responses', response_denied)
+            producer.flush()
+            print(f"[Central] Respondido DENIED para RequestId={request_id}")
+
 
 
 # Función para recibir destinos y responder al cliente
 def handle_customer_requests():
     global TAXIS_DISPONIBLES
 
+    """
     consumer = KafkaConsumer(
         'customer_to_central',
         bootstrap_servers=KAFKA_SERVER,
@@ -305,6 +436,15 @@ def handle_customer_requests():
         group_id='central_recovery_group',
         enable_auto_commit=True
     )
+    """
+    consumer_conf = {
+        'bootstrap.servers': KAFKA_SERVER,
+        'group.id': 'central_recovery_group',
+        'auto.offset.reset': 'earliest',
+        'enable.auto.commit': True
+    }
+    consumer = Consumer(consumer_conf)
+    consumer.subscribe(['customer_to_central'])
 
     for message in consumer:
         customer_request = message.value
@@ -322,11 +462,16 @@ def handle_customer_requests():
             print("Servicio rechazado. No hay taxis disponibles.")
 
         # Enviar respuesta al cliente
-        producer_to_customer.send('central_to_customer', response)
-        producer_to_customer.flush()
+
+        #producer_to_customer.send('central_to_customer', response)
+        #producer_to_customer.flush()
+        producer.produce('central_to_customer', value=json.dumps(response).encode('utf-8'))
+        producer.flush()
 
 
 def delayed_restore(city_map):
+
+    """
     consumer = KafkaConsumer(
         'customer_to_central',
         bootstrap_servers=KAFKA_SERVER,
@@ -336,6 +481,15 @@ def delayed_restore(city_map):
         group_id='central_recovery_group',
         enable_auto_commit=True
     )
+    """
+    consumer_conf = {
+        'bootstrap.servers': KAFKA_SERVER,
+        'group.id': 'central_recovery_group',
+        'auto.offset.reset': 'earliest',
+        'enable.auto.commit': True
+    }
+    consumer = Consumer(consumer_conf)
+    consumer.subscribe(['customer_to_central'])
 
     #time.sleep(0.1)
     for taxi_id, (position, status) in TAXIS_EN_MAPA.items():
@@ -343,6 +497,7 @@ def delayed_restore(city_map):
         if taxi_id not in city_map.taxis:
             city_map.add_taxi(taxi_id, position[0], position[1], color)
             print(f"Taxi {taxi_id} restaurado en ({position[0]}, {position[1]}) con color {color}")
+
 
 # Ejecutar el servidor EC_Central
 if __name__ == "__main__":
@@ -364,8 +519,13 @@ if __name__ == "__main__":
     auth_thread.start()
 
     # Crear hilo para manejar actualizaciones del taxi
+    customers_thread = threading.Thread(target=handle_customer_requests, daemon=True)
+    customers_thread.start()
+
+    # Crear hilo para manejar actualizaciones del taxi
     updates_thread = threading.Thread(target=handle_taxi_updates, args=(city_map,), daemon=True)
     updates_thread.start()
+
 
     # Crear hilo para manejar solicitudes de cliente
     customer_thread = threading.Thread(target=handle_customer_requests, daemon=True)
@@ -375,3 +535,4 @@ if __name__ == "__main__":
     restore_thread.start()
 
     root.mainloop()
+
