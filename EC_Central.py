@@ -194,11 +194,8 @@ def command_input_handler():
             if command in ["STOP", "RESUME"]:
                 send_command(taxi_id, command)
             elif command == "DESTINATION":
-                #new_destination = input("Introduce la nueva localización (en formato (x, y)): ")
-                #send_command(taxi_id, "DESTINATION", new_destination)
-                dest_coord = city_map.get_location_coords(destination)
-                coords = tuple(map(int, new_destination.split(',')))
-                send_command(taxi_id, "DESTINATION", str(coords))
+                new_destination = input("Introduce la nueva localización (en formato (x, y)): ")
+                send_command(taxi_id, "DESTINATION", new_destination)
             elif command == "RETURN":
                 send_command(taxi_id, "RETURN")
             else:
@@ -256,28 +253,26 @@ def handle_taxi_updates(city_map):
     except Exception as e:
         print(f"Error al manejar actualizaciones del taxi: {e}")
 """
-from time import time, sleep
+import time
 #################################
 ########### GOD #################
 #################################
 
 def handle_taxi_updates(city_map):
+    from time import time
 
-    
     consumer = KafkaConsumer(
         'taxi_updates',
         bootstrap_servers=KAFKA_SERVER,
         value_deserializer=lambda m: json.loads(m.decode('utf-8')),
         auto_offset_reset='earliest',
-        group_id=None  # Leemos todo el histórico
+        group_id=None
     )
-    
 
     TAXIS_EN_MAPA.clear()
-    actividad_reciente = {}  # taxi_id -> timestamp del último mensaje
-
+    actividad_reciente = {}
+    tiempo_restauracion = 3
     inicio = time()
-    tiempo_restauracion = 3  # segundos para recuperar taxis activos
 
     try:
         for message in consumer:
@@ -286,41 +281,25 @@ def handle_taxi_updates(city_map):
             position = message.value.get('position')
             color = 'green' if status == 'moving' else 'red'
 
-            # Actualizar estado y marca de tiempo
             TAXIS_EN_MAPA[taxi_id] = (position, status)
             actividad_reciente[taxi_id] = time()
 
-            # Después de un tiempo de restauración, empezamos a repintar
-            if time() - inicio > tiempo_restauracion:
-                # Solo pintar si ha habido actividad reciente
-                for taxi_id, (pos, estado) in TAXIS_EN_MAPA.items():
-                    tiempo_ultimo = actividad_reciente.get(taxi_id, 0)
-                    if time() - tiempo_ultimo < 5:  # Sigue activo
-                        if taxi_id not in city_map.taxis:
-                            color = 'green' if estado == 'moving' else 'red'
-                            city_map.add_taxi(taxi_id, pos[0], pos[1], color)
-                            print(f"[Restore] Taxi {taxi_id} restaurado en ({pos[0]}, {pos[1]}) con color {color}")
-                break  # Ya hemos restaurado taxis activos
+            # Si el taxi no está en el mapa todavía y ya han pasado los segundos de restauración
+            if taxi_id not in city_map.taxis:
+                if time() - inicio > tiempo_restauracion:
+                    city_map.add_taxi(taxi_id, position[0], position[1], color)
+                    print(f"[Restore] Taxi {taxi_id} restaurado en ({position[0]}, {position[1]}) con color {color}")
 
-        # 🟡 Después de la restauración, puedes volver a consumir en tiempo real
-        for message in consumer:
-            taxi_id = message.value.get('taxi_id')
-            status = message.value.get('status')
-            position = message.value.get('position')
-            color = 'green' if status == 'moving' else 'red'
-
-            TAXIS_EN_MAPA[taxi_id] = (position, status)
-
-            if taxi_id in city_map.taxis:
-                city_map.move_taxi(taxi_id, position[0], position[1], color)
             else:
-                city_map.add_taxi(taxi_id, position[0], position[1], color)
+                # Mover el taxi normalmente si ya estaba en el mapa
+                city_map.move_taxi(taxi_id, position[0], position[1], color)
 
             if status == 'stopped' and int(taxi_id) not in TAXIS_DISPONIBLES:
                 TAXIS_DISPONIBLES.append(int(taxi_id))
 
     except Exception as e:
-        print(f"Error en handle_taxi_updates: {e}")
+        print(f"[ERROR] en handle_taxi_updates: {e}")
+
 
 
 
