@@ -40,6 +40,7 @@ class CityMap:
         self.cell_size = 500 // size
         self.locations = {}
         self.taxis = {}
+        self.clients = {}  # Añadir diccionario para clientes
         self.draw_grid()
 
     def draw_grid(self):
@@ -72,6 +73,35 @@ class CityMap:
         )
         text_id = self.canvas.create_text(x0, y0, text=str(taxi_id), fill='white', font=('Helvetica', 14, 'bold'))
         self.taxis[taxi_id] = (rect_id, text_id)
+
+    def add_client(self, client_id, x, y):
+        """Añadir cliente al mapa con color naranja"""
+        x0 = (x - 1) * self.cell_size + self.cell_size // 2
+        y0 = (y - 1) * self.cell_size + self.cell_size // 2
+        rect_id = self.canvas.create_rectangle(
+            (x - 1) * self.cell_size, (y - 1) * self.cell_size,
+            x * self.cell_size, y * self.cell_size,
+            fill='orange'
+        )
+        text_id = self.canvas.create_text(x0, y0, text=f"C{client_id}", fill='white', font=('Helvetica', 12, 'bold'))
+        self.clients[client_id] = (rect_id, text_id)
+        print(f"[Mapa] Cliente {client_id} añadido en posición ({x}, {y})")
+
+    def move_client(self, client_id, x, y):
+        """Mover cliente a nueva posición"""
+        if client_id in self.clients:
+            rect_id, text_id = self.clients[client_id]
+            self.canvas.coords(
+                rect_id,
+                (x - 1) * self.cell_size, (y - 1) * self.cell_size,
+                x * self.cell_size, y * self.cell_size
+            )
+            self.canvas.coords(
+                text_id,
+                (x - 1) * self.cell_size + self.cell_size // 2,
+                (y - 1) * self.cell_size + self.cell_size // 2
+            )
+            print(f"[Mapa] Cliente {client_id} movido a posición ({x}, {y})")
 
     def move_taxi(self, taxi_id, x, y, color):
         if taxi_id in self.taxis:
@@ -164,8 +194,11 @@ def command_input_handler():
             if command in ["STOP", "RESUME"]:
                 send_command(taxi_id, command)
             elif command == "DESTINATION":
-                new_destination = input("Introduce la nueva localización (en formato (x, y)): ")
-                send_command(taxi_id, "DESTINATION", new_destination)
+                #new_destination = input("Introduce la nueva localización (en formato (x, y)): ")
+                #send_command(taxi_id, "DESTINATION", new_destination)
+                dest_coord = city_map.get_location_coords(destination)
+                coords = tuple(map(int, new_destination.split(',')))
+                send_command(taxi_id, "DESTINATION", str(coords))
             elif command == "RETURN":
                 send_command(taxi_id, "RETURN")
             else:
@@ -178,7 +211,6 @@ TAXIS_EN_MAPA = {} # taxi_id -> (position, status)
 """
 # Función para manejar actualizaciones del taxi a través de Kafka
 def handle_taxi_updates(city_map):
-<<<<<<< HEAD
     consumer = KafkaConsumer(
         'taxi_updates',
         bootstrap_servers=KAFKA_SERVER,
@@ -188,7 +220,6 @@ def handle_taxi_updates(city_map):
         enable_auto_commit=True
     )
     processed_ids = set()
-=======
     consumer_conf = {
         'bootstrap.servers': KAFKA_SERVER,
         'group.id': 'central_taxi_updates_group',
@@ -197,7 +228,6 @@ def handle_taxi_updates(city_map):
     consumer = Consumer(consumer_conf)
     consumer.subscribe(['taxi_updates'])
 
->>>>>>> 832e2808a5e55548f706233f2d43f315b076a6e6
     try:
         while True:
             msg = consumer.poll(1.0)
@@ -343,8 +373,8 @@ def authenticate_taxi(id_taxi):
         print(f"[Error BD] Error al autenticar el taxi {id_taxi}: {e}")
         return "ERROR"
     
-
-def handle_customer_requests():
+"""
+def handle_customer_requests(city_map):
     consumer_conf = {
         'bootstrap.servers': KAFKA_SERVER,
         'group.id': 'central_service_requests_group',
@@ -356,6 +386,7 @@ def handle_customer_requests():
     print("[Central] Esperando solicitudes de clientes...")
 
     while True:
+        request = json.loads(msg.value().decode('utf-8'))
         msg = consumer.poll(1.0)
         if msg is None:
             continue
@@ -370,6 +401,13 @@ def handle_customer_requests():
         destination = request.get("Destination")
 
         print(f"[Central] Recibida solicitud de servicio: RequestId={request_id}, Cliente={client_id}, Posición={position}, Destino={destination}")
+
+        # Añadir cliente al mapa en su posición inicial
+        try:
+            pos_x, pos_y = map(int, position.split(','))
+            city_map.add_client(client_id, pos_x, pos_y)
+        except Exception as e:
+            print(f"[Error] No se pudo añadir cliente al mapa: {e}")
 
         time.sleep(1)
 
@@ -409,6 +447,13 @@ def handle_customer_requests():
             producer.flush()
             print(f"[Central] Respondido COMPLETED para RequestId={request_id} con NewPosition={dest_coord}")
 
+            # Mover cliente al destino en el mapa
+            try:
+                dest_x, dest_y = map(int, dest_coord.split(','))
+                city_map.move_client(client_id, dest_x, dest_y)
+            except Exception as e:
+                print(f"[Error] No se pudo mover cliente en el mapa: {e}")
+
         else:
             # Responder 'denied'
             response_denied = {
@@ -416,17 +461,112 @@ def handle_customer_requests():
                 "ClientId": client_id,
                 "Status": "denied"
             }
-            producer.send('service_responses', response_denied)
+            producer.produce(
+                topic='service_responses',
+                value=json.dumps(response_denied).encode('utf-8')
+            )
+            producer.flush()
+            #producer.send('service_responses', response_denied)
+            print(f"[Central] Respondido DENIED para RequestId={request_id}")
+"""
+def handle_customer_requests(city_map):
+    consumer_conf = {
+        'bootstrap.servers': KAFKA_SERVER,
+        'group.id': 'central_service_requests_group',
+        'auto.offset.reset': 'earliest'
+    }
+    consumer = Consumer(consumer_conf)
+    consumer.subscribe(['service_requests'])
+
+    print("[Central] Esperando solicitudes de clientes...")
+
+    while True:
+        msg = consumer.poll(1.0)
+        if msg is None:
+            continue
+        if msg.error():
+            print(f"[Central] Error consumidor solicitudes: {msg.error()}")
+            continue
+
+        request = json.loads(msg.value().decode('utf-8'))
+        request_id = request.get("RequestId")
+        client_id = request.get("ClientId")
+        position = request.get("Position")
+        destination = request.get("Destination")  # Ejemplo: "A"
+
+        print(f"[Central] Recibida solicitud de servicio: RequestId={request_id}, Cliente={client_id}, Posición={position}, Destino={destination}")
+
+        # Añadir cliente al mapa en su posición inicial
+        try:
+            pos_x, pos_y = map(int, position.split(','))
+            city_map.add_client(client_id, pos_x, pos_y)
+        except Exception as e:
+            print(f"[Error] No se pudo añadir cliente al mapa: {e}")
+
+        time.sleep(1)
+
+        # Obtener coordenadas del destino
+        dest_coord = city_map.get_location_coords(destination)  # Ejemplo: "3,5"
+        coords = tuple(map(int, dest_coord.split(',')))         # Ejemplo: (3, 5)
+
+        # Solo aceptar si hay taxis disponibles
+        if TAXIS_DISPONIBLES:
+            taxi_id = TAXIS_DISPONIBLES.pop(0)
+            send_command(taxi_id, "DESTINATION", str(coords))
+            print(f"[Central] Taxi {taxi_id} asignado a destino {destination} ({coords})")
+
+            # Responder 'accepted'
+            response_accepted = {
+                "RequestId": request_id,
+                "ClientId": client_id,
+                "Status": "accepted"
+            }
+            producer.produce(
+                topic='service_responses',
+                value=json.dumps(response_accepted).encode('utf-8')
+            )            
+            producer.flush()
+            print(f"[Central] Respondido ACCEPTED para RequestId={request_id}")
+
+            # Simular trayecto terminado INSTANTÁNEAMENTE para el cliente
+            response_completed = {
+                "RequestId": request_id,
+                "ClientId": client_id,
+                "Status": "completed",
+                "NewPosition": str(dest_coord)
+            }
+            producer.produce(
+                topic='service_responses',
+                value=json.dumps(response_completed).encode('utf-8')
+            )
+            producer.flush()
+            print(f"[Central] Respondido COMPLETED para RequestId={request_id} con NewPosition={dest_coord}")
+
+            # Mover cliente al destino en el mapa
+            try:
+                dest_x, dest_y = map(int, dest_coord.split(','))
+                city_map.move_client(client_id, dest_x, dest_y)
+            except Exception as e:
+                print(f"[Error] No se pudo mover cliente en el mapa: {e}")
+
+        else:
+            # Responder 'denied'
+            response_denied = {
+                "RequestId": request_id,
+                "ClientId": client_id,
+                "Status": "denied"
+            }
+            producer.produce(
+                topic='service_responses',
+                value=json.dumps(response_denied).encode('utf-8')
+            )
             producer.flush()
             print(f"[Central] Respondido DENIED para RequestId={request_id}")
-
-
-
+"""
 # Función para recibir destinos y responder al cliente
 def handle_customer_requests():
     global TAXIS_DISPONIBLES
 
-    """
     consumer = KafkaConsumer(
         'customer_to_central',
         bootstrap_servers=KAFKA_SERVER,
@@ -436,7 +576,7 @@ def handle_customer_requests():
         group_id='central_recovery_group',
         enable_auto_commit=True
     )
-    """
+    
     consumer_conf = {
         'bootstrap.servers': KAFKA_SERVER,
         'group.id': 'central_recovery_group',
@@ -467,7 +607,7 @@ def handle_customer_requests():
         #producer_to_customer.flush()
         producer.produce('central_to_customer', value=json.dumps(response).encode('utf-8'))
         producer.flush()
-
+"""
 
 def delayed_restore(city_map):
 
@@ -519,8 +659,8 @@ if __name__ == "__main__":
     auth_thread.start()
 
     # Crear hilo para manejar actualizaciones del taxi
-    customers_thread = threading.Thread(target=handle_customer_requests, daemon=True)
-    customers_thread.start()
+    #customers_thread = threading.Thread(target=handle_customer_requests, daemon=True)
+    #customers_thread.start()
 
     # Crear hilo para manejar actualizaciones del taxi
     updates_thread = threading.Thread(target=handle_taxi_updates, args=(city_map,), daemon=True)
@@ -528,7 +668,7 @@ if __name__ == "__main__":
 
 
     # Crear hilo para manejar solicitudes de cliente
-    customer_thread = threading.Thread(target=handle_customer_requests, daemon=True)
+    customer_thread = threading.Thread(target=handle_customer_requests, args=(city_map,), daemon=True)
     customer_thread.start()
 
     restore_thread = threading.Thread(target=delayed_restore, args=(city_map,), daemon=True)
