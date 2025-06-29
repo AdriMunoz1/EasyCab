@@ -30,7 +30,7 @@ size = 20
 
 # Taxis disponibles para asignarles un destino
 TAXIS_DISPONIBLES = []
-
+SERVICIOS_EN_CURSO = {} 
 # Crear el mapa de la ciudad usando Tkinter
 class CityMap:
     def __init__(self, root, size):
@@ -126,6 +126,13 @@ class CityMap:
             y = y1 // self.cell_size
             return f"{int(x)},{int(y)}"
         return "0,0"
+
+    def remove_client(self, client_id):
+        if client_id in self.clients:
+            rect_id, text_id = self.clients[client_id]
+            self.canvas.delete(rect_id)
+            self.canvas.delete(text_id)
+            del self.clients[client_id]
     
 """
 # Cargar el mapa de la ciudad
@@ -257,7 +264,7 @@ import time
 #################################
 ########### GOD #################
 #################################
-
+"""
 def handle_taxi_updates(city_map):
     from time import time
 
@@ -299,10 +306,124 @@ def handle_taxi_updates(city_map):
 
     except Exception as e:
         print(f"[ERROR] en handle_taxi_updates: {e}")
+"""
+def handle_taxi_updates(city_map):
+    from time import time
+
+    consumer = KafkaConsumer(
+        'taxi_updates',
+        bootstrap_servers=KAFKA_SERVER,
+        value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+        auto_offset_reset='earliest',
+        group_id=None  # Leemos todo el histórico
+    )
+
+    TAXIS_EN_MAPA.clear()
+    actividad_reciente = {}
+    tiempo_restauracion = 3
+    inicio = time()
+
+    try:
+        for message in consumer:
+            taxi_id = message.value.get('taxi_id')
+            status = message.value.get('status')
+            position = message.value.get('position')
+            color = 'green' if status == 'moving' else 'red'
+
+            # Guardar última posición
+            TAXIS_EN_MAPA[taxi_id] = (position, status)
+            actividad_reciente[taxi_id] = time()
+
+            # Restauración si no está en el mapa
+            if taxi_id not in city_map.taxis:
+                if time() - inicio > tiempo_restauracion:
+                    city_map.add_taxi(taxi_id, position[0], position[1], color)
+                    print(f"[Restore] Taxi {taxi_id} restaurado en ({position[0]}, {position[1]}) con color {color}")
+            else:
+                city_map.move_taxi(taxi_id, position[0], position[1], color)
+
+            # Añadir a taxis disponibles si está parado
+            if status == 'stopped' and int(taxi_id) not in TAXIS_DISPONIBLES:
+                TAXIS_DISPONIBLES.append(int(taxi_id))
+
+            # 📦 GESTIÓN DEL SERVICIO EN CURSO
+            if taxi_id in SERVICIOS_EN_CURSO:
+                servicio = SERVICIOS_EN_CURSO[taxi_id]
+
+                if servicio["estado"] == "recogiendo":
+                    if tuple(position) == tuple(servicio["origen"]):
+                        servicio["estado"] = "llevando"
+                        city_map.move_client(servicio["cliente"], position[0], position[1])
+                        send_command(taxi_id, "DESTINATION", str(servicio["destino"]))
+                        print(f"[Central] Taxi {taxi_id} ha recogido al cliente {servicio['cliente']} y se dirige a {servicio['destino']}")
+
+                elif servicio["estado"] == "llevando":
+                    if tuple(position) == tuple(servicio["destino"]):
+                        city_map.move_client(servicio["cliente"], position[0], position[1])
+                        city_map.remove_client(servicio["cliente"])
+                        
+                        print(f"Cliente {servicio['cliente']} ha llegado a su destino con el taxi {taxi_id}")
+                        response_completed = {
+                            "RequestId": servicio["request_id"],
+                            "ClientId": servicio["cliente"],
+                            "Status": "completed",
+                            "NewPosition": f"{position[0]},{position[1]}"
+                        }
+                        producer_to_customer.send('service_responses', response_completed)
+                        producer_to_customer.flush()
+                        del SERVICIOS_EN_CURSO[taxi_id]
+                        TAXIS_DISPONIBLES.append(int(taxi_id))
+
+    except Exception as e:
+        print(f"[ERROR] en handle_taxi_updates: {e}")
 
 
 
 
+"""
+# PRUEBA
+def handle_taxi_updates(city_map):
+    global SERVICIOS_EN_CURSO
+    # ... resto de la función ...
+    for message in consumer:
+        taxi_id = message.value.get('taxi_id')
+        status = message.value.get('status')
+        position = tuple(message.value.get('position'))  # (x, y)
+        color = 'green' if status == 'moving' else 'red'
+        # ... mover taxi en el mapa ...
+
+        # Lógica de recogida y trayecto
+        if taxi_id in SERVICIOS_EN_CURSO:
+            servicio = SERVICIOS_EN_CURSO[taxi_id]
+            if servicio["estado"] == "recogiendo":
+                if position == servicio["origen"]:
+                    # El taxi ha llegado al cliente
+                    servicio["estado"] = "llevando"
+                    # Mover cliente a la posición del taxi (sube al taxi)
+                    city_map.move_client(servicio["cliente"], position[0], position[1])
+                    # Mandar al taxi el destino final
+                    send_command(taxi_id, "DESTINATION", str(servicio["destino"]))
+                    print(f"[Central] Taxi {taxi_id} ha recogido a cliente {servicio['cliente']}, va a {servicio['destino']}")
+            elif servicio["estado"] == "llevando":
+                if position == servicio["destino"]:
+                    # El taxi y el cliente han llegado al destino
+                    city_map.move_client(servicio["cliente"], position[0], position[1])
+                    print(f"Cliente {servicio['cliente']} ha llegado a su destino con el taxi {taxi_id}")
+                    # Ahora sí, responde 'completed' al cliente
+                    response_completed = {
+                        "RequestId": servicio["request_id"],
+                        "ClientId": servicio["cliente"],
+                        "Status": "completed",
+                        "NewPosition": f"{position[0]},{position[1]}"
+                    }
+                    producer.produce(
+                        topic='service_responses',
+                        value=json.dumps(response_completed).encode('utf-8')
+                    )
+                    producer.flush()
+                    del SERVICIOS_EN_CURSO[taxi_id]
+                    TAXIS_DISPONIBLES.append(taxi_id)
+"""
 
 # Hilo para manejar solicitudes de autenticación de taxis por sockets
 def handle_auth_requests_sockets(ip, port, city_map):
@@ -487,7 +608,7 @@ def handle_customer_requests(city_map):
         # Obtener coordenadas del destino
         dest_coord = city_map.get_location_coords(destination)  # Ejemplo: "3,5"
         coords = tuple(map(int, dest_coord.split(',')))         # Ejemplo: (3, 5)
-
+        """
         # Solo aceptar si hay taxis disponibles
         if TAXIS_DISPONIBLES:
             taxi_id = TAXIS_DISPONIBLES.pop(0)
@@ -527,7 +648,33 @@ def handle_customer_requests(city_map):
                 city_map.move_client(client_id, dest_x, dest_y)
             except Exception as e:
                 print(f"[Error] No se pudo mover cliente en el mapa: {e}")
-
+        """
+        if TAXIS_DISPONIBLES:
+            taxi_id = TAXIS_DISPONIBLES.pop(0)
+            pos_x, pos_y = map(int, position.split(','))
+            dest_coord = city_map.get_location_coords(destination)
+            dest_x, dest_y = map(int, dest_coord.split(','))
+            send_command(taxi_id, "DESTINATION", str((pos_x, pos_y)))  # PRIMER DESTINO: posición del cliente
+            SERVICIOS_EN_CURSO[taxi_id] = {
+                "cliente": client_id,
+                "origen": (pos_x, pos_y),
+                "destino": (dest_x, dest_y),
+                "estado": "recogiendo",
+                "request_id": request_id
+            }
+            # Solo responder 'accepted' aquí
+            response_accepted = {
+                "RequestId": request_id,
+                "ClientId": client_id,
+                "Status": "accepted"
+            }
+            producer.produce(
+                topic='service_responses',
+                value=json.dumps(response_accepted).encode('utf-8')
+            )
+            producer.flush()
+            print(f"[Central] Taxi {taxi_id} va a recoger a cliente {client_id} en ({pos_x}, {pos_y})")
+    # Responder denied...
         else:
             # Responder 'denied'
             response_denied = {
